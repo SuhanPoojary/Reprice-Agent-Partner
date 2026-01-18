@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Calendar,
@@ -13,16 +13,16 @@ import {
   Users,
 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
-import { Card, CardContent } from '../../components/ui/Card'
+// import { Card, CardContent } from '../../components/ui/Card' // unused
 import { useAuth } from '../../context/AuthContext'
 import { useGeoLocation } from '../../hooks/useGeoLocation'
 import { distanceKm, formatKm } from '../../lib/geo'
-import type { ApiError } from '../../api/client'
+import { apiFetch, type ApiError } from '../../api/client'
 import {
   cancelPickup,
   completePickup,
+  declinePickup,
   getMyPickups,
-  getNearbyOrders,
   startPickup,
   updateAgentLocation,
   type BackendOrder,
@@ -38,13 +38,45 @@ type OrdersCacheV1 = {
   completed: BackendOrder[]
 }
 
-function directionsUrl(order: BackendOrder) {
-  return `https://www.google.com/maps/dir/?api=1&destination=${order.latitude},${order.longitude}`
+type StickyOrdersV1 = {
+  version: 1
+  savedAt: string
+  ordersById: Record<string, BackendOrder>
 }
 
-function shortId(id: string) {
-  if (!id) return ''
-  return id.length > 10 ? `${id.slice(0, 8)}…${id.slice(-3)}` : id
+function stickyKeyForAgent(agentId: string) {
+  return `apdash.agent.stickyAccepted.v1.${agentId}`
+}
+
+function loadSticky(agentId: string): StickyOrdersV1 | null {
+  try {
+    const raw = localStorage.getItem(stickyKeyForAgent(agentId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as StickyOrdersV1
+    if (!parsed || parsed.version !== 1) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function saveSticky(agentId: string, sticky: StickyOrdersV1) {
+  try {
+    localStorage.setItem(stickyKeyForAgent(agentId), JSON.stringify(sticky))
+  } catch {
+    // ignore
+  }
+}
+
+function mergeOrders(preferred: BackendOrder[], fallback: BackendOrder[]) {
+  const map = new Map<string, BackendOrder>()
+  for (const o of fallback) map.set(String(o.id), o)
+  for (const o of preferred) map.set(String(o.id), o) // preferred wins
+  return Array.from(map.values())
+}
+
+function directionsUrl(order: BackendOrder) {
+  return `https://www.google.com/maps/dir/?api=1&destination=${order.latitude},${order.longitude}`
 }
 
 function formatMoneyINR(value: number) {
@@ -89,84 +121,116 @@ export default function AgentDashboard() {
   const [previewOrder, setPreviewOrder] = useState<BackendOrder | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [busyOrderIds, setBusyOrderIds] = useState<Set<string>>(new Set())
+
+  // ✅ sticky store so accepted orders never disappear due to stale fetch/caches
+  const [stickyById, setStickyById] = useState<Record<string, BackendOrder>>({})
+
+  const isBusy = (id: string | number) => busyOrderIds.has(String(id))
+
+  const upsertSticky = (o: BackendOrder) => {
+    const key = String(o.id)
+    setStickyById((prev) => ({ ...prev, [key]: o }))
+  }
+
+  const fetchAllOrders = useCallback(async (): Promise<BackendOrder[] | null> => {
+    setLoading(true)
+    setError(null)
+    try {
+      const myResp = await getMyPickups()
+      if (myResp.success) {
+        setNearbyOrders(myResp.orders.filter((o) => o.status === 'pending'))
+        setInProgressOrders(myResp.orders.filter((o) => o.status === 'in-progress'))
+        setCompletedOrders(myResp.orders.filter((o) => o.status === 'completed'))
+        return myResp.orders
+      }
+      return null
+    } catch (e: any) {
+      const err = e as ApiError
+      setError(err?.message ?? 'Failed to fetch orders')
+      return null
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const withOrderAction = useCallback(
+    async (orderId: string | number, fn: () => Promise<void>) => {
+      const key = String(orderId)
+      if (busyOrderIds.has(key)) return
+
+      setBusyOrderIds((prev) => new Set(prev).add(key))
+      try {
+        await fn()
+      } catch (e: any) {
+        const status = typeof e?.status === 'number' ? e.status : undefined
+        const msg = e?.message ?? 'Something went wrong'
+        alert(status === 409 ? msg || 'Order already assigned or not available' : msg)
+        await fetchAllOrders().catch(() => {})
+      } finally {
+        setBusyOrderIds((prev) => {
+          const next = new Set(prev)
+          next.delete(key)
+          return next
+        })
+      }
+    },
+    [busyOrderIds, fetchAllOrders],
+  )
 
   // Ensure /auth/me has populated agent user when token exists.
   useEffect(() => {
     if (!token) return
     if (user?.role === 'agent') return
     refreshMe().catch(() => {})
-  }, [token, user?.role])
+  }, [token, user?.role, refreshMe])
 
-  // Route-guard (matches the sample behavior)
+  // Route-guard
   useEffect(() => {
     if (!token) {
       navigate('/agent/login')
       return
     }
-
-    // If token exists but user is not hydrated yet, wait.
     if (!user) return
-
-    if (user.role !== 'agent') {
-      navigate('/agent/login')
-    }
+    if (user.role !== 'agent') navigate('/agent/login')
   }, [token, user, navigate])
 
-  // Load cached orders once (no auto-refresh on every tab switch)
+  // ✅ Load sticky + cached orders; background refresh if stale
   useEffect(() => {
     if (!token) return
     if (!user) return
     if (user.role !== 'agent') return
+
+    const sticky = loadSticky(user.id)
+    if (sticky?.ordersById) setStickyById(sticky.ordersById)
 
     const cached = loadOrdersCache(user.id)
     if (cached) {
       setNearbyOrders(cached.nearby ?? [])
       setInProgressOrders(cached.inProgress ?? [])
       setCompletedOrders(cached.completed ?? [])
+
+      const savedAtMs = Date.parse(cached.savedAt || '')
+      const isStale = !Number.isFinite(savedAtMs) || Date.now() - savedAtMs > 15_000
+      if (isStale) void fetchAllOrders()
       return
     }
 
-    // No cache yet: do a one-time fetch.
-    void (async () => {
-      await fetchAllOrders()
-    })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, user?.id, user?.role])
+    void fetchAllOrders()
+  }, [token, user, fetchAllOrders])
 
   // Update agent location (best effort)
   useEffect(() => {
     if (!token) return
     if (geo.status !== 'ok') return
+    if (!geo.position) return
     updateAgentLocation(geo.position.lat, geo.position.lng).catch(() => {})
-  }, [token, geo.status])
+  }, [token, geo.status, geo.position?.lat, geo.position?.lng])
 
-  const fetchAllOrders = async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const [nearbyResp, myResp] = await Promise.all([getNearbyOrders(), getMyPickups()])
-
-      if (nearbyResp.success) {
-        setNearbyOrders(nearbyResp.orders.filter((o) => o.status === 'pending'))
-      }
-
-      if (myResp.success) {
-        setInProgressOrders(myResp.orders.filter((o) => o.status === 'in-progress'))
-        setCompletedOrders(myResp.orders.filter((o) => o.status === 'completed'))
-      }
-    } catch (e: any) {
-      const err = e as ApiError
-      setError(err?.message ?? 'Failed to fetch orders')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Persist orders to localStorage (so it doesn't load every time)
+  // Persist orders cache
   useEffect(() => {
     if (!user || user.role !== 'agent') return
     if (!token) return
-
     saveOrdersCache(user.id, {
       version: 1,
       savedAt: new Date().toISOString(),
@@ -176,8 +240,43 @@ export default function AgentDashboard() {
     })
   }, [token, user, nearbyOrders, inProgressOrders, completedOrders])
 
+  // ✅ Persist sticky “accepted” orders
+  useEffect(() => {
+    if (!user || user.role !== 'agent') return
+    if (!token) return
+    saveSticky(user.id, {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      ordersById: stickyById,
+    })
+  }, [token, user, stickyById])
+
+  // ✅ Merge sticky into UI lists so accepted orders never disappear
+  const stickyPending = useMemo(
+    () => Object.values(stickyById).filter((o) => o.status === 'pending'),
+    [stickyById],
+  )
+  const stickyInProgress = useMemo(
+    () => Object.values(stickyById).filter((o) => o.status === 'in-progress'),
+    [stickyById],
+  )
+  const stickyCompleted = useMemo(
+    () => Object.values(stickyById).filter((o) => o.status === 'completed'),
+    [stickyById],
+  )
+
+  const mergedNearby = useMemo(() => mergeOrders(nearbyOrders, stickyPending), [nearbyOrders, stickyPending])
+  const mergedInProgress = useMemo(
+    () => mergeOrders(inProgressOrders, stickyInProgress),
+    [inProgressOrders, stickyInProgress],
+  )
+  const mergedCompleted = useMemo(
+    () => mergeOrders(completedOrders, stickyCompleted),
+    [completedOrders, stickyCompleted],
+  )
+
   const displayedOrders = useMemo(() => {
-    const base = view === 'nearby' ? nearbyOrders : view === 'my' ? inProgressOrders : completedOrders
+    const base = view === 'nearby' ? mergedNearby : view === 'my' ? mergedInProgress : mergedCompleted
     const myPos = geo.status === 'ok' ? geo.position : null
     return base.map((o) => {
       const computed =
@@ -186,18 +285,17 @@ export default function AgentDashboard() {
           : o.distance_km
       return { ...o, distance_km: computed }
     })
-  }, [view, nearbyOrders, inProgressOrders, completedOrders, geo.status, geo.position])
+  }, [view, mergedNearby, mergedInProgress, mergedCompleted, geo.status, geo.position])
 
   const stats = useMemo(() => {
-    const incoming = nearbyOrders.filter((o) => o.status === 'pending').length
-    const started = inProgressOrders.filter((o) => o.status === 'in-progress').length
-    const completed = completedOrders.filter((o) => o.status === 'completed').length
-    const earnings = completedOrders
+    const incoming = mergedNearby.filter((o) => o.status === 'pending').length
+    const started = mergedInProgress.filter((o) => o.status === 'in-progress').length
+    const completed = mergedCompleted.filter((o) => o.status === 'completed').length
+    const earnings = mergedCompleted
       .filter((o) => o.status === 'completed')
       .reduce((sum, o) => sum + Number(o.price) * 0.05, 0)
-
     return { incoming, started, completed, earnings }
-  }, [nearbyOrders, inProgressOrders, completedOrders])
+  }, [mergedNearby, mergedInProgress, mergedCompleted])
 
   const orderStatusBadge = (status: BackendOrder['status']) => {
     const map: Record<BackendOrder['status'], { label: string; cls: string }> = {
@@ -230,13 +328,7 @@ export default function AgentDashboard() {
             <div className="text-xs text-slate-600">Live pickups</div>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={() => fetchAllOrders()}
-              disabled={loading}
-            >
+            <Button type="button" variant="secondary" size="sm" onClick={() => void fetchAllOrders()} disabled={loading}>
               {loading ? 'Refreshing…' : 'Refresh'}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={logout}>
@@ -263,7 +355,7 @@ export default function AgentDashboard() {
               variant={view === 'nearby' ? 'primary' : 'secondary'}
               onClick={() => setView('nearby')}
             >
-              Nearby Orders
+              Assigned Orders
             </Button>
             <Button
               variant={view === 'my' ? 'primary' : 'secondary'}
@@ -282,7 +374,7 @@ export default function AgentDashboard() {
           {/* Stats */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
             {[
-              { label: 'Incoming Orders', value: stats.incoming, icon: Package },
+              { label: 'Assigned Orders', value: stats.incoming, icon: Package },
               { label: 'Pending', value: stats.started, icon: Clock },
               { label: 'Completed', value: stats.completed, icon: CheckCircle },
               { label: 'Earnings', value: formatMoneyINR(stats.earnings), icon: IndianRupee },
@@ -356,22 +448,100 @@ export default function AgentDashboard() {
                         </Button>
 
                         {view === 'nearby' && order.status === 'pending' ? (
-                          <Button
-                            size="sm"
-                            onClick={async () => {
-                              const resp = await startPickup(order.id)
-                              if (resp?.success) {
-                                // Move from incoming -> started
-                                setNearbyOrders((prev) => prev.filter((o) => o.id !== order.id))
-                                setInProgressOrders((prev) => [{ ...order, status: 'in-progress' }, ...prev])
-                                if (previewOrder?.id === order.id) setPreviewOrder(null)
-                              } else {
-                                alert(resp?.message || 'Order already taken')
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              disabled={isBusy(order.id)}
+                              onClick={() =>
+                                void withOrderAction(order.id, async () => {
+                                  // ✅ Try proper "start" first; fallback to existing startPickup (which may call /assign)
+                                  try {
+                                    await apiFetch(`/orders/${order.id}/start`, { method: 'PATCH' })
+                                  } catch (e: any) {
+                                    // If /start not supported, fallback.
+                                    if (e?.status === 404 || e?.status === 405) {
+                                      const resp = await startPickup(order.id)
+                                      if (!resp?.success) {
+                                        alert(resp?.message || 'Failed to start pickup')
+                                        await fetchAllOrders().catch(() => {})
+                                        return
+                                      }
+                                    } else if (e?.status === 409) {
+                                      // Conflict: re-sync and decide if it became "mine" or was taken.
+                                      const orders = await fetchAllOrders().catch(() => null)
+                                      const mine = orders?.find((o) => String(o.id) === String(order.id))
+                                      if (mine) {
+                                        upsertSticky(mine.status === 'in-progress' ? mine : { ...mine, status: 'in-progress' })
+                                        setNearbyOrders((prev) => prev.filter((o) => o.id !== order.id))
+                                        setInProgressOrders((prev) => mergeOrders([{ ...order, status: 'in-progress' }], prev))
+                                        if (previewOrder?.id === order.id) setPreviewOrder(null)
+                                        return
+                                      }
+                                      setNearbyOrders((prev) => prev.filter((o) => o.id !== order.id))
+                                      alert('Order already taken by another agent.')
+                                      if (previewOrder?.id === order.id) setPreviewOrder(null)
+                                      return
+                                    } else {
+                                      throw e
+                                    }
+                                  }
+
+                                  // Optimistic UI + sticky (accepted orders never disappear)
+                                  upsertSticky({ ...order, status: 'in-progress' })
+                                  setNearbyOrders((prev) => prev.filter((o) => o.id !== order.id))
+                                  setInProgressOrders((prev) => [{ ...order, status: 'in-progress' }, ...prev])
+                                  if (previewOrder?.id === order.id) setPreviewOrder(null)
+
+                                  // Final sync
+                                  await fetchAllOrders().catch(() => {})
+                                })
                               }
-                            }}
-                          >
-                            Start Pickup
-                          </Button>
+                            >
+                              Start Pickup
+                            </Button>
+
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              disabled={isBusy(order.id)}
+                              onClick={() =>
+                                void withOrderAction(order.id, async () => {
+                                  // ✅ Decline should not be /cancel for pending. Try /decline; fall back safely.
+                                  try {
+                                    await apiFetch(`/orders/${order.id}/decline`, { method: 'PATCH' })
+                                  } catch (e: any) {
+                                    if (e?.status === 404 || e?.status === 405) {
+                                      try {
+                                        const resp = await declinePickup(order.id)
+                                        if (!resp?.success) throw Object.assign(new Error(resp?.message || 'Failed to decline'), { status: 400 })
+                                      } catch {
+                                        // last-resort fallback (some backends misuse /cancel for decline)
+                                        const resp2 = await cancelPickup(order.id)
+                                        if (!resp2?.success) {
+                                          alert(resp2?.message || 'Failed to decline order')
+                                          await fetchAllOrders().catch(() => {})
+                                          return
+                                        }
+                                      }
+                                    } else if (e?.status === 400 || e?.status === 409) {
+                                      await fetchAllOrders().catch(() => {})
+                                      alert(e?.message || 'Order cannot be declined right now.')
+                                      return
+                                    } else {
+                                      throw e
+                                    }
+                                  }
+
+                                  setNearbyOrders((prev) => prev.filter((o) => o.id !== order.id))
+                                  if (previewOrder?.id === order.id) setPreviewOrder(null)
+                                  // keep sticky as-is (declined order wasn’t accepted)
+                                  await fetchAllOrders().catch(() => {})
+                                })
+                              }
+                            >
+                              Decline
+                            </Button>
+                          </div>
                         ) : null}
                       </div>
 
@@ -379,33 +549,48 @@ export default function AgentDashboard() {
                         <div className="flex gap-2 mt-2 md:justify-end">
                           <Button
                             size="sm"
-                            onClick={async () => {
-                              const resp = await completePickup(order.id)
-                              if (resp?.success) {
-                                setInProgressOrders((prev) => prev.filter((o) => o.id !== order.id))
-                                setCompletedOrders((prev) => [{ ...order, status: 'completed' }, ...prev])
-                                if (previewOrder?.id === order.id) setPreviewOrder(null)
-                              } else {
-                                alert(resp?.message || 'Failed to complete order')
-                              }
-                            }}
+                            disabled={isBusy(order.id)}
+                            onClick={() =>
+                              void withOrderAction(order.id, async () => {
+                                const resp = await completePickup(order.id)
+                                if (resp?.success) {
+                                  const completedSnap = { ...order, status: 'completed' as const }
+                                  upsertSticky(completedSnap) // ✅ keep forever (never disappear)
+                                  setInProgressOrders((prev) => prev.filter((o) => o.id !== order.id))
+                                  setCompletedOrders((prev) => [completedSnap, ...prev])
+                                  if (previewOrder?.id === order.id) setPreviewOrder(null)
+                                  await fetchAllOrders().catch(() => {})
+                                } else {
+                                  alert(resp?.message || 'Failed to complete order')
+                                  await fetchAllOrders().catch(() => {})
+                                }
+                              })
+                            }
                           >
                             Complete
                           </Button>
+
                           <Button
                             size="sm"
                             variant="danger"
-                            onClick={async () => {
-                              const resp = await cancelPickup(order.id)
-                              if (resp?.success) {
-                                // Move from started -> incoming
-                                setInProgressOrders((prev) => prev.filter((o) => o.id !== order.id))
-                                setNearbyOrders((prev) => [{ ...order, status: 'pending' }, ...prev])
-                                if (previewOrder?.id === order.id) setPreviewOrder(null)
-                              } else {
-                                alert(resp?.message || 'Failed to cancel order')
-                              }
-                            }}
+                            disabled={isBusy(order.id)}
+                            onClick={() =>
+                              void withOrderAction(order.id, async () => {
+                                const resp = await cancelPickup(order.id)
+                                if (resp?.success) {
+                                  // back to pending; keep sticky snapshot so it never disappears
+                                  const pendingSnap = { ...order, status: 'pending' as const }
+                                  upsertSticky(pendingSnap)
+                                  setInProgressOrders((prev) => prev.filter((o) => o.id !== order.id))
+                                  setNearbyOrders((prev) => [pendingSnap, ...prev])
+                                  if (previewOrder?.id === order.id) setPreviewOrder(null)
+                                  await fetchAllOrders().catch(() => {})
+                                } else {
+                                  alert(resp?.message || 'Failed to cancel order')
+                                  await fetchAllOrders().catch(() => {})
+                                }
+                              })
+                            }
                           >
                             Cancel
                           </Button>
@@ -459,7 +644,10 @@ export default function AgentDashboard() {
 
               <Button
                 className="mt-4 w-full"
-                onClick={() => window.open(directionsUrl(previewOrder), '_blank')}
+                onClick={() => {
+                  if (!previewOrder) return
+                  window.open(directionsUrl(previewOrder), '_blank')
+                }}
               >
                 <Navigation className="h-4 w-4" /> Navigate to Customer
               </Button>

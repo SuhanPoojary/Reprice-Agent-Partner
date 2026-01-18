@@ -24,6 +24,11 @@ export type OrdersResponse = {
   orders: BackendOrder[]
 }
 
+export type OrderActionResponse = {
+  success: boolean
+  message?: string
+}
+
 export async function updateAgentLocation(latitude: number, longitude: number) {
   return apiFetch<{ success: boolean; message?: string }>(`/agent/update-location`, {
     method: 'POST',
@@ -40,14 +45,36 @@ export async function getMyPickups() {
   return apiFetch<OrdersResponse>(`/agent/my-pickups`, { method: 'GET' })
 }
 
-export async function startPickup(orderId: string) {
-  return apiFetch<any>(`/orders/${orderId}/assign`, { method: 'PATCH' })
+export async function startPickup(orderId: string | number) {
+  // If backend supports "start" for already-assigned orders, use it.
+  try {
+    return await apiFetch<OrderActionResponse>(`/orders/${orderId}/start`, { method: 'PATCH' })
+  } catch (e: any) {
+    // Older backend / different route: fallback to assign.
+    if (e?.status === 404 || e?.status === 405) {
+      return await apiFetch<OrderActionResponse>(`/orders/${orderId}/assign`, { method: 'PATCH' })
+    }
+    throw e
+  }
+}
+
+// For pending orders: agent declines/unassigns (separate from canceling an in-progress pickup).
+export async function declinePickup(orderId: string | number) {
+  try {
+    return await apiFetch<OrderActionResponse>(`/orders/${orderId}/decline`, { method: 'PATCH' })
+  } catch (e: any) {
+    // Fallback if backend uses /cancel for decline (legacy).
+    if (e?.status === 404 || e?.status === 405) {
+      return await apiFetch<OrderActionResponse>(`/orders/${orderId}/cancel`, { method: 'PATCH' })
+    }
+    throw e
+  }
 }
 
 export async function completePickup(orderId: string) {
-  return apiFetch<any>(`/orders/${orderId}/complete`, { method: 'PATCH' })
+  return apiFetch<OrderActionResponse>(`/orders/${orderId}/complete`, { method: 'PATCH' })
 }
 
-export async function cancelPickup(orderId: string) {
-  return apiFetch<any>(`/orders/${orderId}/cancel`, { method: 'PATCH' })
+export async function cancelPickup(orderId: string | number) {
+  return apiFetch<OrderActionResponse>(`/orders/${orderId}/cancel`, { method: 'PATCH' })
 }

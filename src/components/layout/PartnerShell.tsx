@@ -1,10 +1,10 @@
 import React from 'react'
-import { LogOut, MapPin, Users, BarChart3 } from 'lucide-react'
+import { LogOut, MapPin, Users, BarChart3, Package } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import { cn } from '../../lib/cn'
 import { BrandMark } from './BrandMark'
 
-export type PartnerTab = 'orders' | 'agents' | 'stats'
+export type PartnerTab = 'orders' | 'agents' | 'stats' | 'take-orders'
 
 export function PartnerShell({
   tab,
@@ -40,6 +40,7 @@ export function PartnerShell({
 
             <div className="mt-4 space-y-2">
               {item('orders', 'Orders', <MapPin className="h-4 w-4" />)}
+              {item('take-orders', 'Take Orders', <Package className="h-4 w-4" />)}
               {item('agents', 'Agents', <Users className="h-4 w-4" />)}
               {item('stats', 'Performance', <BarChart3 className="h-4 w-4" />)}
             </div>

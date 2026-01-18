@@ -8,40 +8,43 @@ import ProtectedRoute from './context/ProtectedRoute'
 import { MockDataProvider } from './mock/MockDataContext'
 import AgentLogin from './pages/agent/AgentLogin'
 import PartnerLogin from './pages/partner/PartnerLogin'
+import { OrderFlowProvider } from './context/OrderFlowContext'
 
 export default function App() {
   return (
     <AuthProvider>
       <MockDataProvider>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/login" element={<Home />} />
-          <Route path="/agent/login" element={<AgentLogin />} />
-          <Route path="/partner/login" element={<PartnerLogin />} />
+        <OrderFlowProvider>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/login" element={<Home />} />
+            <Route path="/agent/login" element={<AgentLogin />} />
+            <Route path="/partner/login" element={<PartnerLogin />} />
 
-          {/* Back-compat links */}
-          <Route path="/portal" element={<Navigate to="/login" replace />} />
+            {/* Back-compat links */}
+            <Route path="/portal" element={<Navigate to="/login" replace />} />
 
-          <Route
-            path="/partner"
-            element={
-              <ProtectedRoute role="partner">
-                <PartnerDashboard />
-              </ProtectedRoute>
-            }
-          />
+            <Route
+              path="/partner"
+              element={
+                <ProtectedRoute role="partner">
+                  <PartnerDashboard />
+                </ProtectedRoute>
+              }
+            />
 
-          <Route
-            path="/agent"
-            element={
-              <ProtectedRoute role="agent">
-                <AgentDashboard />
-              </ProtectedRoute>
-            }
-          />
+            <Route
+              path="/agent"
+              element={
+                <ProtectedRoute role="agent">
+                  <AgentDashboard />
+                </ProtectedRoute>
+              }
+            />
 
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </OrderFlowProvider>
       </MockDataProvider>
     </AuthProvider>
   )

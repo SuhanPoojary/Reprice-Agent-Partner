@@ -23,6 +23,7 @@ export type PartnerOrder = {
   time_slot?: string | null
   created_at?: string
   agent_id?: string | null
+  partner_accepted?: boolean
 
   customer_name: string
   customer_phone?: string | null
@@ -36,14 +37,30 @@ export type PartnerOrder = {
 
   agent_name?: string | null
   agent_phone?: string | null
+
+  // Non-persistent (in-memory) backend hints
+  blocked_agent_ids?: string[]
+  returned_at?: string | null
 }
 
 export async function getPartnerOrders() {
   return apiFetch<{ success: boolean; orders: PartnerOrder[] }>(`/partner/orders`, { method: 'GET' })
 }
 
+export async function getAvailableOrders() {
+  return apiFetch<{ success: boolean; orders: PartnerOrder[] }>(`/partner/orders/available`, { method: 'GET' })
+}
+
 export async function getPartnerAgents() {
   return apiFetch<{ success: boolean; agents: PartnerAgent[] }>(`/partner/agents`, { method: 'GET' })
+}
+
+export async function acceptOrder(orderId: string) {
+  return apiFetch<{ success: boolean; order?: any; message?: string }>(`/partner/orders/${orderId}/accept`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
 }
 
 export async function assignOrderToAgent(orderId: string, agentId: string) {
