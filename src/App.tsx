@@ -2,6 +2,11 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import Home from './pages/page'
 import NotFound from './pages/NotFound'
+import AboutUs from './pages/AboutUs'
+import HowItWorks from './pages/HowItWorks'
+import Contact from './pages/Contact'
+import Sitemap from './pages/Sitemap'
+import LoginTo from './pages/loginto'
 import PartnerDashboard from './pages/partner/PartnerDashboard'
 import AgentDashboard from './pages/agent/AgentDashboard'
 import ProtectedRoute from './context/ProtectedRoute'
@@ -17,12 +22,14 @@ export default function App() {
         <OrderFlowProvider>
           <Routes>
             <Route path="/" element={<Home />} />
-            <Route path="/login" element={<Home />} />
+            <Route path="/loginto" element={<LoginTo />} />
+            <Route path="/login" element={<Navigate to="/loginto" replace />} />
+            <Route path="/how-it-works" element={<HowItWorks />} />
+            <Route path="/about-us" element={<AboutUs />} />
+            <Route path="/contact" element={<Contact />} />
+            <Route path="/sitemap" element={<Sitemap />} />
             <Route path="/agent/login" element={<AgentLogin />} />
             <Route path="/partner/login" element={<PartnerLogin />} />
-
-            {/* Back-compat links */}
-            <Route path="/portal" element={<Navigate to="/login" replace />} />
 
             <Route
               path="/partner"

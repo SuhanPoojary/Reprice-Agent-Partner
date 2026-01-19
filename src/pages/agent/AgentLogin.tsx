@@ -18,7 +18,7 @@ export default function AgentLogin() {
               type="button"
               variant="secondary"
               className="absolute -top-12 right-0 bg-white/90 hover:bg-white"
-              onClick={() => navigate('/login')}
+              onClick={() => navigate('/loginto')}
             >
               <X className="h-4 w-4" />
               Close

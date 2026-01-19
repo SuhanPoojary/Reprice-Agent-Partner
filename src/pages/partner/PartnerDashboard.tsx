@@ -6,7 +6,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Ca
 import { OrderFilters, type OrderFilterState } from '../../components/orders/OrderFilters'
 import { PartnerMap, type PartnerMapHandle } from '../../components/map/PartnerMap'
 import { distanceKm } from '../../lib/geo'
-import { PARTNER_HUB } from '../../mock/data'
 import {
   assignOrderToAgent,
   createPartnerAgent,
@@ -77,11 +76,33 @@ export default function PartnerDashboard() {
   const {
     hub,
     requestLiveHub,
-    resetToDefault: resetHubToDefault,
     isRequesting: hubRequesting,
     error: hubError,
-    isDefault: hubIsDefault,
-  } = usePartnerHubLocation(PARTNER_HUB)
+  } = usePartnerHubLocation()
+
+  const effectiveHub = useMemo(() => {
+    if (hub) return hub
+    const fromOrder = orders[0] ?? availableOrders[0]
+    if (fromOrder) return { lat: fromOrder.latitude, lng: fromOrder.longitude }
+    const fromAgent = agents.find((a) => a.latitude != null && a.longitude != null)
+    if (fromAgent) return { lat: fromAgent.latitude as number, lng: fromAgent.longitude as number }
+    return null
+  }, [hub, orders, availableOrders, agents])
+
+  const didAutoLocateRef = useRef(false)
+  useEffect(() => {
+    if (tab !== 'orders') return
+    if (didAutoLocateRef.current) return
+    didAutoLocateRef.current = true
+    ;(async () => {
+      try {
+        await requestLiveHub()
+        mapRef.current?.backToHub()
+      } catch {
+        // permission denied/unavailable; error shown inline
+      }
+    })()
+  }, [tab, requestLiveHub])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -124,10 +145,11 @@ export default function PartnerDashboard() {
   }, [acceptedAtById])
 
   const ordersWithDistance = useMemo(() => {
+    if (!effectiveHub) return []
     return orders
-      .map((o) => ({ o, d: distanceKm(hub, { lat: o.latitude, lng: o.longitude }) }))
+      .map((o) => ({ o, d: distanceKm(effectiveHub, { lat: o.latitude, lng: o.longitude }) }))
       .sort((a, b) => new Date(b.o.created_at ?? 0).getTime() - new Date(a.o.created_at ?? 0).getTime())
-  }, [orders, hub])
+  }, [orders, effectiveHub])
 
   const withinDefaultRadius = useMemo(
     () => ordersWithDistance.filter((x) => x.d <= 5).length,
@@ -224,23 +246,26 @@ export default function PartnerDashboard() {
   }
 
   const mapAgents = useMemo<MapAgent[]>(
-    () =>
-      onlineAgents.map((a) => ({
+    () => {
+      if (!effectiveHub) return []
+      return onlineAgents.map((a) => ({
         id: a.id,
         name: a.name,
         phone: a.phone ?? '',
         liveStatus: a.isOnline ? 'pending' : 'offline',
         lastSeenAt: a.last_seen_at ?? new Date(0).toISOString(),
-        location: { lat: a.latitude ?? hub.lat, lng: a.longitude ?? hub.lng },
-      })),
-    [onlineAgents, hub.lat, hub.lng],
+        location: { lat: a.latitude ?? effectiveHub.lat, lng: a.longitude ?? effectiveHub.lng },
+      }))
+    },
+    [onlineAgents, effectiveHub],
   )
 
   const availableOrdersWithDistance = useMemo(() => {
+    if (!effectiveHub) return []
     return availableOrders
-      .map((o) => ({ o, d: distanceKm(hub, { lat: o.latitude, lng: o.longitude }) }))
+      .map((o) => ({ o, d: distanceKm(effectiveHub, { lat: o.latitude, lng: o.longitude }) }))
       .sort((a, b) => new Date(b.o.created_at ?? 0).getTime() - new Date(a.o.created_at ?? 0).getTime())
-  }, [availableOrders, hub])
+  }, [availableOrders, effectiveHub])
 
   const takeOrdersItems = useMemo(() => {
     // Unaccepted = only truly available/unassigned orders.
@@ -422,7 +447,16 @@ export default function PartnerDashboard() {
             <p className="text-sm text-slate-600">Orders and agents within your service radius.</p>
           </div>
           <div className="flex-1" />
-          <div className="text-xs text-slate-500">Default view: within 5 km • Hub: {hub.lat.toFixed(3)}, {hub.lng.toFixed(3)}</div>
+          <div className="text-xs text-slate-500">
+            Default view: within 5 km • Hub:{' '}
+            {effectiveHub ? (
+              <>
+                {effectiveHub.lat.toFixed(3)}, {effectiveHub.lng.toFixed(3)}
+              </>
+            ) : (
+              'Locating…'
+            )}
+          </div>
         </div>
 
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -488,27 +522,14 @@ export default function PartnerDashboard() {
                   {hubRequesting ? 'Locating…' : 'Use live hub location'}
                 </Button>
 
-                {!hubIsDefault ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      resetHubToDefault()
-                      mapRef.current?.backToHub()
-                    }}
-                  >
-                    Reset hub
+                {ordersPanel === 'orders' && viewMode === 'map' ? (
+                  <Button variant="secondary" size="sm" onClick={() => mapRef.current?.backToHub()}>
+                    Back to hub
                   </Button>
                 ) : null}
 
                 {hubError ? <div className="text-xs text-rose-700">{hubError}</div> : null}
               </div>
-
-              {ordersPanel === 'orders' && viewMode === 'map' ? (
-                <Button variant="secondary" size="sm" onClick={() => mapRef.current?.backToHub()}>
-                  Back to hub
-                </Button>
-              ) : null}
             </div>
 
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -655,7 +676,43 @@ export default function PartnerDashboard() {
               </>
             ) : (
               <div className="grid grid-cols-1 xl:grid-cols-[1fr_520px] gap-4">
-                <PartnerMap ref={mapRef} hub={hub} radiusKm={filters.maxDistanceKm} orders={mapOrders} agents={mapAgents} />
+                {effectiveHub ? (
+                  <PartnerMap
+                    ref={mapRef}
+                    hub={effectiveHub}
+                    radiusKm={filters.maxDistanceKm}
+                    orders={mapOrders}
+                    agents={mapAgents}
+                  />
+                ) : (
+                  <Card className="shadow-soft">
+                    <CardContent className="p-6">
+                      <div className="text-sm font-medium text-slate-900">Fetching live location…</div>
+                      <div className="mt-1 text-sm text-slate-600">
+                        Please allow location access so the map can center on your live hub.
+                      </div>
+                      {hubError ? <div className="mt-2 text-sm text-rose-700">{hubError}</div> : null}
+                      <div className="mt-4 flex gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              await requestLiveHub()
+                              mapRef.current?.backToHub()
+                            } catch {
+                              // error shown inline
+                            }
+                          }}
+                          disabled={hubRequesting}
+                        >
+                          <MapPin className={['h-4 w-4', hubRequesting ? 'animate-pulse' : ''].join(' ')} />
+                          {hubRequesting ? 'Locating…' : 'Use live hub location'}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
 
                 <div className="space-y-3">
                   {filteredOrders.length > 6 ? (

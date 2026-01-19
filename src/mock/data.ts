@@ -1,10 +1,5 @@
 import type { Agent, Order } from './types'
 
-export const PARTNER_HUB = {
-  lat: Number(import.meta.env.VITE_PARTNER_LAT ?? 19.076),
-  lng: Number(import.meta.env.VITE_PARTNER_LNG ?? 72.8777),
-}
-
 export const seedAgents: Agent[] = [
   {
     id: 'agent-1',

@@ -1,12 +1,12 @@
 import { Link } from "react-router-dom"
 import {
-  ArrowRight,
   MapPin,
   ShieldCheck,
   Truck,
   Users,
   Activity,
   Globe,
+  Mail,
 } from "lucide-react"
 import { Button } from "../components/ui/Button"
 import { SiteHeader } from "../components/SiteHeader"
@@ -39,7 +39,7 @@ export default function Home() {
               </h1>
 
               <p className="mt-6 text-lg text-slate-600 leading-relaxed max-w-xl">
-                FleetFlow helps logistics partners assign agents, track pickups,
+                MobileTrade helps logistics partners assign agents, track pickups,
                 and manage operations with clarity, speed, and real-time control.
               </p>
 
@@ -48,18 +48,13 @@ export default function Home() {
                   asChild
                   className="bg-blue-600 hover:bg-blue-700 text-white rounded-full px-8 py-6 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-[1.03]"
                 >
-                  <Link to="/login">
-                    Open Dashboard
-                    <ArrowRight className="ml-2 h-4 w-4" />
+                  <Link to="/how-it-works">See how it works</Link>
+                </Button>
+
+                <Button asChild variant="secondary" className="rounded-full px-8 py-6">
+                  <Link to="/contact">
+                    <Mail className="h-4 w-4" /> Contact us
                   </Link>
-                </Button>
-
-                <Button asChild variant="secondary" className="rounded-full px-8 py-6">
-                  <Link to="/partner/login">Partner Login</Link>
-                </Button>
-
-                <Button asChild variant="secondary" className="rounded-full px-8 py-6">
-                  <Link to="/agent/login">Agent Login</Link>
                 </Button>
               </div>
 
@@ -72,23 +67,11 @@ export default function Home() {
 
             {/* MOCK DASHBOARD */}
             <div className="relative">
-              <div className="rounded-3xl bg-white/70 backdrop-blur-xl border border-white/40 shadow-2xl p-8">
-                <MockCard
-                  icon={<Users />}
-                  title="Partner Dashboard"
-                  desc="Assign and monitor agent pickups"
-                />
-                <MockCard
-                  icon={<MapPin />}
-                  title="Agent Navigation"
-                  desc="Distance based pickup routing"
-                />
-                <MockCard
-                  icon={<ShieldCheck />}
-                  title="Verified Status"
-                  desc="Pickup lifecycle control"
-                />
-              </div>
+              <img
+                src="/images/landing2.jpg"
+                alt="MobileTrade operations dashboard"
+                className="w-full max-w-xl rounded-3xl shadow-2xl object-cover"
+              />
             </div>
           </div>
         </section>
@@ -96,7 +79,7 @@ export default function Home() {
         {/* FEATURES */}
         <section className="max-w-7xl mx-auto px-6 py-24">
           <h2 className="text-4xl font-extrabold text-center mb-16">
-            Why Logistics Teams Choose FleetFlow
+            Why Logistics Teams Choose MobileTrade
           </h2>
 
           <div className="grid md:grid-cols-3 gap-10">
@@ -145,24 +128,28 @@ export default function Home() {
           </div>
         </section>
 
-        {/* CTA */}
-        <section className="max-w-7xl mx-auto px-6 py-24">
-          <div className="rounded-[2.5rem] bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-600 text-white p-14 shadow-2xl flex flex-col md:flex-row justify-between items-center gap-8">
-            <div>
-              <h3 className="text-3xl font-extrabold">
-                Start managing pickups professionally
-              </h3>
-              <p className="text-blue-100 mt-3 text-lg">
-                Switch to modern logistics workflow today.
-              </p>
+        {/* Bottom effects */}
+        <section className="relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-blue-50 to-indigo-50" />
+          <div className="absolute -bottom-24 left-1/3 h-[420px] w-[420px] rounded-full bg-blue-500/10 blur-3xl animate-pulse" />
+          <div className="absolute -bottom-24 right-1/4 h-[520px] w-[520px] rounded-full bg-indigo-500/10 blur-3xl animate-pulse" />
+          <div className="relative max-w-7xl mx-auto px-6 py-16">
+            <div className="rounded-3xl border bg-white/70 backdrop-blur-xl shadow-soft p-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+              <div>
+                <h4 className="text-2xl font-extrabold">Need help getting started?</h4>
+                <p className="mt-2 text-slate-600 max-w-2xl">
+                  Explore the workflow, or reach out to configure partner hubs, agent onboarding, and pickup SLAs.
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <Button asChild variant="secondary">
+                  <Link to="/about-us">About us</Link>
+                </Button>
+                <Button asChild className="bg-brand-600 hover:bg-brand-700 text-white">
+                  <Link to="/contact">Contact</Link>
+                </Button>
+              </div>
             </div>
-
-            <Button
-              asChild
-              className="bg-white text-blue-600 hover:bg-slate-100 rounded-full px-10 py-6 font-semibold shadow-lg"
-            >
-              <Link to="/login">Launch Dashboard</Link>
-            </Button>
           </div>
         </section>
       </main>
@@ -181,20 +168,6 @@ function Stat({ title, subtitle }: any) {
         {title}
       </p>
       <p className="text-sm font-medium text-slate-500 mt-1">{subtitle}</p>
-    </div>
-  )
-}
-
-function MockCard({ icon, title, desc }: any) {
-  return (
-    <div className="flex items-center gap-4 border rounded-2xl p-5 mb-4 hover:scale-[1.02] hover:shadow-md transition-all duration-300">
-      <div className="h-12 w-12 bg-gradient-to-br from-blue-600 to-indigo-600 text-white rounded-xl flex items-center justify-center">
-        {icon}
-      </div>
-      <div>
-        <p className="font-semibold">{title}</p>
-        <p className="text-sm text-slate-600">{desc}</p>
-      </div>
     </div>
   )
 }

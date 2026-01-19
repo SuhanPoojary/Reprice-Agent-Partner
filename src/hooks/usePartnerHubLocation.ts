@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useState } from 'react'
 
 export type HubLocation = { lat: number; lng: number }
 
@@ -24,15 +24,10 @@ function storeHub(hub: HubLocation) {
   }
 }
 
-export function usePartnerHubLocation(defaultHub: HubLocation) {
-  const [hub, setHubState] = useState<HubLocation>(() => readStoredHub() ?? defaultHub)
+export function usePartnerHubLocation() {
+  const [hub, setHubState] = useState<HubLocation | null>(() => readStoredHub())
   const [isRequesting, setIsRequesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const isDefault = useMemo(
-    () => hub.lat === defaultHub.lat && hub.lng === defaultHub.lng,
-    [hub.lat, hub.lng, defaultHub.lat, defaultHub.lng],
-  )
 
   const setHub = useCallback((next: HubLocation) => {
     setHubState(next)
@@ -78,10 +73,5 @@ export function usePartnerHubLocation(defaultHub: HubLocation) {
     }
   }, [setHub])
 
-  const resetToDefault = useCallback(() => {
-    setHub(defaultHub)
-    setError(null)
-  }, [defaultHub, setHub])
-
-  return { hub, setHub, requestLiveHub, resetToDefault, isRequesting, error, isDefault }
+  return { hub, setHub, requestLiveHub, isRequesting, error }
 }

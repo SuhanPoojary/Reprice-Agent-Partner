@@ -10,7 +10,7 @@ export default function NotFound() {
           <p className="mt-2 text-sm text-slate-600">The page you’re looking for doesn’t exist.</p>
           <div className="mt-5">
             <Button asChild>
-              <Link to="/login">Back to login</Link>
+              <Link to="/">Back to home</Link>
             </Button>
           </div>
         </div>
