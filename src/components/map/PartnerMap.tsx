@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, type CSSProperties } from 'react'
 import { Circle, CircleMarker, MapContainer, Polyline, TileLayer, Tooltip, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
@@ -15,34 +15,45 @@ L.Icon.Default.mergeOptions({
   shadowUrl: markerShadow,
 })
 
-const containerStyle: React.CSSProperties = {
+const containerStyle: CSSProperties = {
   width: '100%',
   height: '420px',
   borderRadius: '16px',
   overflow: 'hidden',
 }
 
-function FitBounds({ bounds }: { bounds: L.LatLngBounds }) {
+function FitBoundsOnce({ bounds }: { bounds: L.LatLngBounds }) {
   const map = useMap()
-  // Avoid over-zooming when there is only one point.
-  map.fitBounds(bounds, { padding: [24, 24], maxZoom: 15 })
+  const didFit = useRef(false)
+  useEffect(() => {
+    if (didFit.current) return
+    didFit.current = true
+    // Fit only on first mount so periodic refresh doesn't reset user's viewport.
+    map.fitBounds(bounds, { padding: [24, 24], maxZoom: 15 })
+  }, [map, bounds])
   return null
 }
 
-export function PartnerMap({
-  hub,
-  radiusKm,
-  orders,
-  agents,
-}: {
+export type PartnerMapHandle = {
+  backToHub: () => void
+}
+
+export const PartnerMap = forwardRef<PartnerMapHandle, {
   hub: LatLng
   radiusKm: number
   orders: Order[]
   agents: Agent[]
-}) {
+}>(function PartnerMap({
+  hub,
+  radiusKm,
+  orders,
+  agents,
+}, ref) {
   const center = useMemo(() => ({ lat: hub.lat, lng: hub.lng }), [hub.lat, hub.lng])
 
   const onlineAgents = useMemo(() => agents.filter((a) => a.liveStatus !== 'offline'), [agents])
+
+  const mapRef = useRef<L.Map>(null as any)
 
   // Decorative "routes": draw a soft line from assigned agent → pickup.
   const routes = useMemo(() => {
@@ -68,16 +79,34 @@ export function PartnerMap({
     return L.latLngBounds(pts)
   }, [hub.lat, hub.lng, orders, onlineAgents])
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      backToHub: () => {
+        const map = mapRef.current
+        if (!map) return
+        map.setView([hub.lat, hub.lng], map.getZoom() ?? 13, { animate: true })
+      },
+    }),
+    [hub.lat, hub.lng],
+  )
+
   return (
     <div className="rounded-2xl border bg-white shadow-soft">
       <div style={containerStyle}>
-        <MapContainer center={[center.lat, center.lng]} zoom={13} scrollWheelZoom={false} style={{ width: '100%', height: '100%' }}>
+        <MapContainer
+          center={[center.lat, center.lng]}
+          zoom={13}
+          scrollWheelZoom={false}
+          style={{ width: '100%', height: '100%' }}
+          ref={mapRef}
+        >
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
 
-          <FitBounds bounds={bounds} />
+          <FitBoundsOnce bounds={bounds} />
 
           {/* Service radius */}
           <Circle
@@ -166,4 +195,4 @@ export function PartnerMap({
       </div>
     </div>
   )
-}
+})
