@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import { loginAgent, loginPartner, me, signupAgent, signupPartner } from '../api/auth'
+import { loginAgent, loginPartner, signupAgent, signupPartner, type PartnerApplicationInput } from '../api/auth'
 
 export type Role = 'partner' | 'agent'
 
@@ -8,6 +8,15 @@ export type AuthUser = {
   name: string
   role: Role
   phone?: string
+
+  // partner-only (optional)
+  company_name?: string | null
+  business_address?: string | null
+  gst_number?: string | null
+  pan_number?: string | null
+  verification_status?: string | null
+  is_active?: boolean | null
+  rejection_reason?: string | null
 }
 
 type AuthContextValue = {
@@ -17,8 +26,13 @@ type AuthContextValue = {
   loginAgentWithPassword: (phone: string, password: string) => Promise<void>
   loginPartnerWithPassword: (phone: string, password: string) => Promise<void>
   signupAgentWithPassword: (name: string, phone: string, password: string, email?: string) => Promise<void>
-  signupPartnerWithPassword: (name: string, phone: string, password: string, email?: string) => Promise<void>
-  refreshMe: () => Promise<void>
+  signupPartnerWithPassword: (
+    name: string,
+    phone: string,
+    password: string,
+    email?: string,
+    application?: PartnerApplicationInput,
+  ) => Promise<string>
   logout: () => void
 }
 
@@ -42,27 +56,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY))
 
   useEffect(() => {
-    // If a token exists but user isn't hydrated (or stale), try loading /auth/me.
+    // IMPORTANT: do not auto-call /auth/me.
+    // If a token exists but we don't have a cached user, force a fresh login.
     if (!token) return
-    if (user?.role === 'agent' || user?.role === 'partner') return
-    ;(async () => {
-      try {
-        const resp = await me()
-        if (!resp.success) return
-        if (resp.data.userType !== 'agent' && resp.data.userType !== 'partner') return
-        const next: AuthUser = {
-          id: resp.data.id,
-          name: resp.data.name,
-          phone: resp.data.phone,
-          role: resp.data.userType,
-        }
-        setUser(next)
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-      } catch {
-        // Ignore; token might be invalid/expired.
-      }
-    })()
-  }, [token])
+    if (!user) {
+      setToken(null)
+      localStorage.removeItem(TOKEN_KEY)
+      return
+    }
+    if (user.role !== 'agent' && user.role !== 'partner') {
+      setUser(null)
+      setToken(null)
+      localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(TOKEN_KEY)
+    }
+  }, [token, user])
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -103,6 +111,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           name: resp.data.user.name,
           phone: resp.data.user.phone,
           role: 'partner',
+          company_name: resp.data.user.company_name ?? null,
+          business_address: resp.data.user.business_address ?? null,
+          gst_number: resp.data.user.gst_number ?? null,
+          pan_number: resp.data.user.pan_number ?? null,
+          verification_status: (resp.data.user as any).verification_status ?? null,
+          is_active: (resp.data.user as any).is_active ?? null,
+          rejection_reason: (resp.data.user as any).rejection_reason ?? null,
         }
         setUser(next)
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
@@ -122,33 +137,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(next)
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
       },
-      signupPartnerWithPassword: async (name, phone, password, email) => {
-        const resp = await signupPartner(name, phone, password, email)
+      signupPartnerWithPassword: async (name, phone, password, email, application) => {
+        const resp = await signupPartner(name, phone, password, email, application)
         if (!resp.success) throw new Error('Signup failed')
-        localStorage.setItem(TOKEN_KEY, resp.data.token)
-        setToken(resp.data.token)
-
-        const next: AuthUser = {
-          id: resp.data.user.id,
-          name: resp.data.user.name,
-          phone: resp.data.user.phone,
-          role: 'partner',
-        }
-        setUser(next)
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-      },
-      refreshMe: async () => {
-        const resp = await me()
-        if (!resp.success) return
-        if (resp.data.userType !== 'agent' && resp.data.userType !== 'partner') return
-        const next: AuthUser = {
-          id: resp.data.id,
-          name: resp.data.name,
-          phone: resp.data.phone,
-          role: resp.data.userType,
-        }
-        setUser(next)
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+        return resp.message || 'Application submitted. Admin will review and contact you.'
       },
       logout: () => {
         setUser(null)

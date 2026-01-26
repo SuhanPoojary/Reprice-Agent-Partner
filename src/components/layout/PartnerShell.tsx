@@ -1,18 +1,20 @@
 import React from 'react'
-import { LogOut, MapPin, Users, BarChart3, Package } from 'lucide-react'
+import { LogOut, MapPin, Users, BarChart3, Package, Wallet, UserCircle } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import { cn } from '../../lib/cn'
 import { BrandMark } from './BrandMark'
 
-export type PartnerTab = 'orders' | 'agents' | 'stats' | 'take-orders'
+export type PartnerTab = 'orders' | 'agents' | 'stats' | 'take-orders' | 'credits' | 'profile'
 
 export function PartnerShell({
   tab,
   setTab,
+  creditBalance,
   children,
 }: {
   tab: PartnerTab
   setTab: (t: PartnerTab) => void
+  creditBalance?: number | null
   children: React.ReactNode
 }) {
   const { logout } = useAuth()
@@ -38,9 +40,21 @@ export function PartnerShell({
           <aside className="rounded-2xl border bg-white shadow-soft p-4 h-fit lg:sticky lg:top-4">
             <BrandMark subtitle="Partner Dashboard" />
 
+            <div className="mt-4 rounded-xl border bg-slate-50 px-3 py-2">
+              <div className="text-[11px] uppercase tracking-wide text-slate-500">Credits</div>
+              <div className="mt-0.5 flex items-center justify-between">
+                <div className="text-lg font-semibold text-slate-900">
+                  {creditBalance == null ? '—' : Number(creditBalance).toLocaleString()}
+                </div>
+                <div className="text-xs text-slate-500">balance</div>
+              </div>
+            </div>
+
             <div className="mt-4 space-y-2">
               {item('orders', 'Orders', <MapPin className="h-4 w-4" />)}
               {item('take-orders', 'Take Orders', <Package className="h-4 w-4" />)}
+              {item('credits', 'Credits', <Wallet className="h-4 w-4" />)}
+              {item('profile', 'Profile', <UserCircle className="h-4 w-4" />)}
               {item('agents', 'Agents', <Users className="h-4 w-4" />)}
               {item('stats', 'Performance', <BarChart3 className="h-4 w-4" />)}
             </div>

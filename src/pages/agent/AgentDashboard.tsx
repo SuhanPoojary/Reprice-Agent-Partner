@@ -111,7 +111,7 @@ function saveOrdersCache(agentId: string, cache: OrdersCacheV1) {
 
 export default function AgentDashboard() {
   const navigate = useNavigate()
-  const { user, token, refreshMe, logout } = useAuth()
+  const { user, token, logout } = useAuth()
   const geo = useGeoLocation(true)
 
   const [view, setView] = useState<View>('nearby')
@@ -177,13 +177,6 @@ export default function AgentDashboard() {
     },
     [busyOrderIds, fetchAllOrders],
   )
-
-  // Ensure /auth/me has populated agent user when token exists.
-  useEffect(() => {
-    if (!token) return
-    if (user?.role === 'agent') return
-    refreshMe().catch(() => {})
-  }, [token, user?.role, refreshMe])
 
   // Route-guard
   useEffect(() => {

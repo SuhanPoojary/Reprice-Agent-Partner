@@ -18,6 +18,9 @@ export type PartnerOrder = {
   phone_variant: string
   phone_condition: string
   price: number
+  original_price?: number | null
+  discount_amount?: number | null
+  partner_payable_price?: number | null
   status: 'pending' | 'in-progress' | 'completed'
   pickup_date: string
   time_slot?: string | null
@@ -27,7 +30,11 @@ export type PartnerOrder = {
 
   // Credits (backend computed)
   required_credits?: number
+  credits?: number
   credit_product_key?: string
+  discount_rupees_per_credit?: number
+  max_discount_rupees?: number
+  potential_discount_amount?: number
   partner_id?: string | null
   credits_charged?: number | null
 
@@ -71,8 +78,16 @@ export async function getPartnerAgents() {
   return apiFetch<{ success: boolean; agents: PartnerAgent[] }>(`/partner/agents`, { method: 'GET' })
 }
 
-export async function acceptOrder(orderId: string) {
-  return apiFetch<{ success: boolean; order?: any; message?: string }>(`/partner/orders/${orderId}/accept`, {
+export async function acceptOrder(orderId: string, opts?: { useCredits?: boolean }) {
+  return apiFetch<{ success: boolean; order?: any; message?: string; used_credits?: boolean; credits_charged?: number; discount_amount?: number; partner_payable_price?: number }>(`/partner/orders/${orderId}/accept`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ useCredits: opts?.useCredits }),
+  })
+}
+
+export async function unacceptOrder(orderId: string) {
+  return apiFetch<{ success: boolean; order?: any; message?: string; refunded_credits?: number }>(`/partner/orders/${orderId}/unaccept`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),

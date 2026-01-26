@@ -13,6 +13,7 @@ import {
   getPartnerOrders,
   getAvailableOrders,
   acceptOrder,
+  unacceptOrder,
   getMyCreditBalance,
   listMyCreditPlans,
   buyCreditPlan,
@@ -25,6 +26,7 @@ import type { Agent as MapAgent, Order as MapOrder } from '../../mock/types'
 import { Modal } from '../../components/ui/Modal'
 import { Input } from '../../components/ui/Input'
 import { usePartnerHubLocation } from '../../hooks/usePartnerHubLocation'
+import { useAuth } from '../../context/AuthContext'
 
 type AcceptedOrdersStoreV1 = {
   version: 1
@@ -54,6 +56,7 @@ function saveAcceptedStore(store: AcceptedOrdersStoreV1) {
 }
 
 export default function PartnerDashboard() {
+  const { user } = useAuth()
   const [tab, setTab] = useState<PartnerTab>('orders')
   const [ordersPanel, setOrdersPanel] = useState<'orders' | 'agents'>('orders')
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map')
@@ -71,6 +74,9 @@ export default function PartnerDashboard() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [acceptingOrderId, setAcceptingOrderId] = useState<string | null>(null)
+  const [acceptPromptOrder, setAcceptPromptOrder] = useState<PartnerOrder | null>(null)
+  const [acceptPromptStep, setAcceptPromptStep] = useState<'details' | 'payment'>('details')
+  const [returningOrderId, setReturningOrderId] = useState<string | null>(null)
 
   const [creditBalance, setCreditBalance] = useState<number | null>(null)
   const [creditPlans, setCreditPlans] = useState<PartnerCreditPlan[]>([])
@@ -78,6 +84,29 @@ export default function PartnerDashboard() {
   const [buyingPlanId, setBuyingPlanId] = useState<number | null>(null)
 
   const [createOpen, setCreateOpen] = useState(false)
+
+  const partnerVerificationStatus = (user?.verification_status || '').toLowerCase()
+  const partnerIsActive = user?.is_active
+
+  useEffect(() => {
+    if (!user || user.role !== 'partner') return
+    const isClarification =
+      partnerVerificationStatus === 'clarification' || partnerVerificationStatus === 'clarification_needed'
+
+    if (partnerVerificationStatus && partnerVerificationStatus !== 'approved') {
+      // Avoid spamming APIs when partner is not approved.
+      setError(
+        partnerVerificationStatus === 'rejected'
+          ? `Your application was rejected${user.rejection_reason ? `: ${user.rejection_reason}` : ''}`
+          : isClarification
+            ? 'Your application needs clarification. Please contact admin.'
+            : 'Your application is pending approval. Please wait for admin verification.',
+      )
+    }
+    if (partnerIsActive === false) {
+      setError((prev) => prev || 'Your partner account is inactive. Please contact admin.')
+    }
+  }, [user, partnerVerificationStatus, partnerIsActive])
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [createForm, setCreateForm] = useState({ name: '', phone: '', email: '', password: '' })
@@ -99,6 +128,12 @@ export default function PartnerDashboard() {
     return null
   }, [hub, orders, availableOrders, agents])
 
+  const acceptPromptDistanceKm = useMemo(() => {
+    if (!acceptPromptOrder) return null
+    if (!effectiveHub) return null
+    return distanceKm(effectiveHub, { lat: acceptPromptOrder.latitude, lng: acceptPromptOrder.longitude })
+  }, [acceptPromptOrder, effectiveHub])
+
   const didAutoLocateRef = useRef(false)
   useEffect(() => {
     if (tab !== 'orders') return
@@ -114,21 +149,99 @@ export default function PartnerDashboard() {
     })()
   }, [tab, requestLiveHub])
 
-  const refresh = useCallback(async () => {
+  const updateCreditBalance = useCallback(async () => {
+    try {
+      const b = await getMyCreditBalance()
+      if (b.success) setCreditBalance(Number(b.balance))
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const acceptWithChoice = useCallback(
+    async (order: PartnerOrder, useCredits: boolean) => {
+      setAcceptingOrderId(order.id)
+      try {
+        const resp = await acceptOrder(order.id, { useCredits })
+        if (!resp.success) {
+          alert(resp.message || 'Failed to accept order')
+          return
+        }
+
+        const payable =
+          resp.partner_payable_price != null
+            ? Number(resp.partner_payable_price)
+            : resp.order?.partner_payable_price != null
+              ? Number(resp.order.partner_payable_price)
+              : Number(order.price ?? 0)
+        const discount = resp.discount_amount != null ? Number(resp.discount_amount) : 0
+
+        setAcceptedAtById((prev) => ({ ...prev, [order.id]: new Date().toISOString() }))
+        setAcceptedOrderIds((prev) => new Set(prev).add(order.id))
+        setAvailableOrders((prev) =>
+          prev.map((x) =>
+            x.id === order.id
+              ? {
+                  ...x,
+                  ...(resp.order ? (resp.order as Partial<PartnerOrder>) : {}),
+                  partner_accepted: true,
+                  discount_amount: discount,
+                  partner_payable_price: payable,
+                  price: payable,
+                  credits_charged: resp.credits_charged != null ? Number(resp.credits_charged) : (x as any).credits_charged,
+                }
+              : x,
+          ),
+        )
+
+        setTakeOrdersFilter('accepted')
+        if (useCredits) await updateCreditBalance()
+        setAcceptPromptOrder(null)
+      } catch (e: any) {
+        const err = e as ApiError
+        if (err?.status === 402) {
+          const required = err?.data?.required_credits
+          const balance = err?.data?.balance
+          alert(
+            required != null && balance != null
+              ? `Insufficient Credits (need ${required}, have ${balance}). Please buy a plan.`
+              : 'Insufficient Credits. Please buy a plan.',
+          )
+          setCreditsModalOpen(true)
+          return
+        }
+        alert(err?.message || 'Failed to accept order')
+      } finally {
+        setAcceptingOrderId(null)
+      }
+    },
+    [updateCreditBalance],
+  )
+
+  const refresh = useCallback(async (scope: 'all' | 'credits' = 'all') => {
     setLoading(true)
     setError(null)
     try {
+      if (partnerVerificationStatus && partnerVerificationStatus !== 'approved') {
+        return
+      }
+      if (partnerIsActive === false) {
+        return
+      }
+      if (scope === 'credits') {
+        const [b, p] = await Promise.all([getMyCreditBalance(), listMyCreditPlans()])
+        if (b.success) setCreditBalance(Number(b.balance))
+        if (p.success) setCreditPlans(p.plans)
+        return
+      }
+
       const [o, ao, a, b] = await Promise.all([
         getPartnerOrders(),
         getAvailableOrders(),
         getPartnerAgents(),
         getMyCreditBalance(),
       ])
-      console.log('Refresh - orders with agents:', o.success ? o.orders.length : 'failed')
-      console.log('Refresh - available orders (unassigned):', ao.success ? ao.orders.length : 'failed')
-      if (ao.success) {
-        console.log('Available orders partner_accepted status:', ao.orders.map(x => ({ id: x.id, partner_accepted: x.partner_accepted })))
-      }
+
       if (o.success) {
         setOrders(o.orders)
         const acceptedFromBackend = new Set(o.orders.filter((x) => x.partner_accepted).map((x) => x.id))
@@ -137,36 +250,27 @@ export default function PartnerDashboard() {
           for (const id of acceptedFromBackend) next.add(id)
           return next
         })
+      } else {
+        setError('Failed to load orders')
       }
-      if (ao.success) setAvailableOrders(ao.orders)
-      if (a.success) setAgents(a.agents)
-      if (b.success) setCreditBalance(Number(b.balance))
+
+      if (ao?.success) setAvailableOrders(ao.orders)
+      if (a?.success) setAgents(a.agents)
+      if (b?.success) setCreditBalance(Number(b.balance))
     } catch (e: any) {
-      setError(e?.message ?? 'Failed to load partner data')
+      setError(e?.message || 'Failed to refresh')
     } finally {
       setLoading(false)
     }
-  }, [])
-
-  useEffect(() => {
-    const store = loadAcceptedStore()
-    setAcceptedAtById(store.acceptedAtById)
-    setAcceptedOrderIds(new Set(Object.keys(store.acceptedAtById)))
-    refresh().catch(() => {})
-  }, [refresh])
-
-  // Auto-refresh every 20s (map + live agents) while on Orders tab.
-  useEffect(() => {
-    if (tab !== 'orders') return
-    const id = setInterval(() => {
-      refresh().catch(() => {})
-    }, 20_000)
-    return () => clearInterval(id)
-  }, [tab, refresh])
-
-  useEffect(() => {
-    saveAcceptedStore({ version: 1, acceptedAtById })
-  }, [acceptedAtById])
+  }, [
+    partnerVerificationStatus,
+    partnerIsActive,
+    getMyCreditBalance,
+    listMyCreditPlans,
+    getPartnerOrders,
+    getAvailableOrders,
+    getPartnerAgents,
+  ])
 
   const ordersWithDistance = useMemo(() => {
     if (!effectiveHub) return []
@@ -319,6 +423,25 @@ export default function PartnerDashboard() {
     setTakeOrdersFilter('accepted')
   }
 
+  const applyOrderAssignment = useCallback(
+    (orderId: string, agentId: string) => {
+      const agent = agents.find((a) => String(a.id) === String(agentId))
+      const patch = (o: PartnerOrder): PartnerOrder =>
+        o.id === orderId
+          ? {
+              ...o,
+              agent_id: agentId,
+              agent_name: agent?.name ?? o.agent_name ?? null,
+              agent_phone: agent?.phone ?? o.agent_phone ?? null,
+            }
+          : o
+
+      setOrders((prev) => prev.map(patch))
+      setAvailableOrders((prev) => prev.map(patch))
+    },
+    [agents],
+  )
+
   const realtimeOrderStatus = (o: PartnerOrder): { label: string; cls: string } => {
     if (o.status === 'completed') return { label: 'Completed', cls: 'bg-emerald-500/15 text-emerald-700 border-emerald-500/30' }
     if (o.status === 'in-progress') return { label: 'In Progress', cls: 'bg-blue-500/15 text-blue-700 border-blue-500/30' }
@@ -439,7 +562,20 @@ export default function PartnerDashboard() {
                                     <div className="text-xs text-slate-600 truncate">#{o.order_number ?? o.id}</div>
                                   </div>
                                   <div className="text-right shrink-0">
-                                    <div className="text-sm font-semibold">₹{Number(o.price).toLocaleString()}</div>
+                                    {(() => {
+                                      const finalPrice = Number(o.price ?? 0)
+                                      const orig = Number((o as any).original_price ?? finalPrice)
+                                      const saved = Math.max(0, orig - finalPrice)
+                                      return saved > 0 ? (
+                                        <div>
+                                          <div className="text-[11px] text-slate-500 line-through">₹{orig.toLocaleString()}</div>
+                                          <div className="text-sm font-semibold">₹{finalPrice.toLocaleString()}</div>
+                                          <div className="text-[11px] text-emerald-700">Saved ₹{saved.toLocaleString()}</div>
+                                        </div>
+                                      ) : (
+                                        <div className="text-sm font-semibold">₹{finalPrice.toLocaleString()}</div>
+                                      )
+                                    })()}
                                     <div className="text-[11px] text-slate-500">{new Date(o.pickup_date).toDateString()}</div>
                                   </div>
                                 </div>
@@ -463,7 +599,7 @@ export default function PartnerDashboard() {
   )
 
   return (
-    <PartnerShell tab={tab} setTab={setTab}>
+    <PartnerShell tab={tab} setTab={setTab} creditBalance={creditBalance}>
       <div className="space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
           <div>
@@ -487,7 +623,12 @@ export default function PartnerDashboard() {
           <div className="text-xs text-slate-600 min-h-[1rem]">
             {error ? <span className="text-rose-700">{error}</span> : null}
           </div>
-          <Button variant="secondary" onClick={refresh} disabled={loading} size="sm">
+          <Button
+            variant="secondary"
+            onClick={() => refresh(tab === 'credits' ? 'credits' : 'all')}
+            disabled={loading}
+            size="sm"
+          >
             <RefreshCw className={['h-4 w-4', loading ? 'animate-spin' : ''].join(' ')} />
             {loading ? 'Refreshing…' : 'Refresh'}
           </Button>
@@ -653,7 +794,20 @@ export default function PartnerDashboard() {
                               </div>
                             </div>
                             <div className="text-right shrink-0">
-                              <div className="font-semibold">₹{Number(o.price).toLocaleString()}</div>
+                              {(() => {
+                                const finalPrice = Number(o.price ?? 0)
+                                const orig = Number((o as any).original_price ?? finalPrice)
+                                const saved = Math.max(0, orig - finalPrice)
+                                return saved > 0 ? (
+                                  <div>
+                                    <div className="text-xs text-slate-500 line-through">₹{orig.toLocaleString()}</div>
+                                    <div className="font-semibold">₹{finalPrice.toLocaleString()}</div>
+                                    <div className="text-xs text-emerald-700">Saved ₹{saved.toLocaleString()}</div>
+                                  </div>
+                                ) : (
+                                  <div className="font-semibold">₹{finalPrice.toLocaleString()}</div>
+                                )
+                              })()}
                               <div className="text-xs text-slate-500">{new Date(o.pickup_date).toDateString()}</div>
                             </div>
                           </div>
@@ -704,7 +858,7 @@ export default function PartnerDashboard() {
                                       alert(resp.message || 'Failed to assign order')
                                       return
                                     }
-                                    await refresh()
+                                    applyOrderAssignment(o.id, agentId)
                                   }}
                                 >
                                   <option value="" disabled>
@@ -805,7 +959,20 @@ export default function PartnerDashboard() {
                               </div>
                             </div>
                             <div className="text-right shrink-0">
-                              <div className="font-semibold">₹{Number(o.price).toLocaleString()}</div>
+                              {(() => {
+                                const finalPrice = Number(o.price ?? 0)
+                                const orig = Number((o as any).original_price ?? finalPrice)
+                                const saved = Math.max(0, orig - finalPrice)
+                                return saved > 0 ? (
+                                  <div>
+                                    <div className="text-xs text-slate-500 line-through">₹{orig.toLocaleString()}</div>
+                                    <div className="font-semibold">₹{finalPrice.toLocaleString()}</div>
+                                    <div className="text-xs text-emerald-700">Saved ₹{saved.toLocaleString()}</div>
+                                  </div>
+                                ) : (
+                                  <div className="font-semibold">₹{finalPrice.toLocaleString()}</div>
+                                )
+                              })()}
                               <div className="text-xs text-slate-500">{new Date(o.pickup_date).toDateString()}</div>
                             </div>
                           </div>
@@ -854,7 +1021,7 @@ export default function PartnerDashboard() {
                                       alert(resp.message || 'Failed to assign order')
                                       return
                                     }
-                                    await refresh()
+                                    applyOrderAssignment(o.id, agentId)
                                   }}
                                 >
                                   <option value="" disabled>
@@ -881,6 +1048,188 @@ export default function PartnerDashboard() {
 
         {tab === 'agents' ? (
           <AgentsPanel />
+        ) : null}
+
+        {tab === 'credits' ? (
+          <>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Credit Balance</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-3xl font-semibold">{creditBalance == null ? '—' : creditBalance}</div>
+                  <div className="mt-1 text-xs text-slate-500">Credits are deducted when you accept an order.</div>
+                </CardContent>
+              </Card>
+
+              <Card className="lg:col-span-2">
+                <CardHeader>
+                  <div className="flex items-center justify-between gap-2">
+                    <CardTitle>Buy Credit Packs</CardTitle>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={async () => {
+                        try {
+                          const r = await listMyCreditPlans()
+                          if (r.success) setCreditPlans(r.plans)
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                    >
+                      Load packs
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {creditPlans.length === 0 ? (
+                    <div className="text-sm text-slate-600">No packs loaded yet. Click “Load packs”.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {creditPlans.map((p) => (
+                        <div key={p.id} className="rounded-xl border bg-white p-3 flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">{p.plan_name}</div>
+                            <div className="text-xs text-slate-600">
+                              Credits: {Number(p.credit_amount)} • Price: ₹{Number(p.price).toLocaleString()}
+                            </div>
+                            {p.description ? <div className="text-xs text-slate-500 mt-1">{p.description}</div> : null}
+                          </div>
+                          <Button
+                            size="sm"
+                            disabled={buyingPlanId === p.id}
+                            onClick={async () => {
+                              setBuyingPlanId(p.id)
+                              try {
+                                const r = await buyCreditPlan(p.id)
+                                if (!r.success) {
+                                  alert(r.message || 'Failed to buy plan')
+                                  return
+                                }
+                                if (r.balance != null) setCreditBalance(Number(r.balance))
+                                else await updateCreditBalance()
+                              } catch (e: any) {
+                                alert(e?.message || 'Failed to buy plan')
+                              } finally {
+                                setBuyingPlanId(null)
+                              }
+                            }}
+                          >
+                            {buyingPlanId === p.id ? 'Buying…' : 'Buy'}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </>
+        ) : null}
+
+        {tab === 'profile' ? (
+          <>
+            <Card>
+              <div className="rounded-2xl border bg-white overflow-hidden">
+                <div className="relative">
+                  <div className="h-28 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900" />
+                  <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_20%_20%,white,transparent_40%),radial-gradient(circle_at_80%_30%,white,transparent_45%)]" />
+                  <div className="absolute left-4 right-4 -bottom-10 flex items-end justify-between gap-3">
+                    <div className="flex items-end gap-3">
+                      <div className="h-20 w-20 rounded-2xl bg-white shadow-lg border flex items-center justify-center">
+                        <div className="h-12 w-12 rounded-xl bg-slate-900 text-white flex items-center justify-center text-lg font-semibold">
+                          {(user?.name?.trim()?.[0] ?? 'P').toUpperCase()}
+                        </div>
+                      </div>
+                      <div className="pb-2">
+                        <div className="text-white text-lg font-semibold leading-tight">{user?.name ?? 'Partner'}</div>
+                        <div className="text-slate-200 text-xs">{user?.company_name ?? '—'}</div>
+                      </div>
+                    </div>
+
+                    <div className="pb-2">
+                      <span
+                        className={
+                          'inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium border ' +
+                          (user?.verification_status === 'approved'
+                            ? 'bg-emerald-500/15 text-emerald-200 border-emerald-400/30'
+                            : user?.verification_status === 'pending'
+                              ? 'bg-amber-500/15 text-amber-200 border-amber-400/30'
+                              : user?.verification_status === 'rejected'
+                                ? 'bg-rose-500/15 text-rose-200 border-rose-400/30'
+                                : 'bg-slate-500/15 text-slate-200 border-slate-400/30')
+                        }
+                      >
+                        <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                        {user?.verification_status ?? '—'}
+                      </span>
+                      {user?.is_active === false ? (
+                        <div className="mt-2 text-xs text-rose-200">Account is inactive</div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="px-4 pt-14 pb-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900">Profile</div>
+                      <div className="text-xs text-slate-500">Your partner account details</div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={async () => {
+                        const text = [
+                          user?.name ? `Name: ${user.name}` : null,
+                          user?.phone ? `Phone: ${user.phone}` : null,
+                          user?.company_name ? `Company: ${user.company_name}` : null,
+                          user?.gst_number ? `GST: ${user.gst_number}` : null,
+                          user?.pan_number ? `PAN: ${user.pan_number}` : null,
+                          user?.business_address ? `Address: ${user.business_address}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join('\n')
+                        try {
+                          await navigator.clipboard.writeText(text || '')
+                          alert('Copied')
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                    >
+                      Copy
+                    </Button>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-2xl border bg-white p-4">
+                      <div className="text-xs text-slate-500">Phone</div>
+                      <div className="mt-1 font-semibold text-slate-900">{user?.phone ?? '—'}</div>
+                    </div>
+                    <div className="rounded-2xl border bg-white p-4">
+                      <div className="text-xs text-slate-500">Company</div>
+                      <div className="mt-1 font-semibold text-slate-900">{user?.company_name ?? '—'}</div>
+                    </div>
+                    <div className="rounded-2xl border bg-white p-4 sm:col-span-2">
+                      <div className="text-xs text-slate-500">Business address</div>
+                      <div className="mt-1 font-semibold text-slate-900 break-words">{user?.business_address ?? '—'}</div>
+                    </div>
+                    <div className="rounded-2xl border bg-white p-4">
+                      <div className="text-xs text-slate-500">GST</div>
+                      <div className="mt-1 font-semibold text-slate-900 break-all">{user?.gst_number ?? '—'}</div>
+                    </div>
+                    <div className="rounded-2xl border bg-white p-4">
+                      <div className="text-xs text-slate-500">PAN</div>
+                      <div className="mt-1 font-semibold text-slate-900 break-all">{user?.pan_number ?? '—'}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </>
         ) : null}
 
         <Modal
@@ -954,9 +1303,9 @@ export default function PartnerDashboard() {
                       setCreateError(resp.message || 'Failed to create agent')
                       return
                     }
+                    if (resp.agent) setAgents((prev) => [resp.agent as PartnerAgent, ...prev])
                     setCreateForm({ name: '', phone: '', email: '', password: '' })
                     setCreateOpen(false)
-                    await refresh()
                   } catch (e: any) {
                     setCreateError(e?.message ?? 'Failed to create agent')
                   } finally {
@@ -1051,7 +1400,8 @@ export default function PartnerDashboard() {
                             alert(r.message || 'Failed to buy plan')
                             return
                           }
-                          await refresh()
+                          if (r.balance != null) setCreditBalance(Number(r.balance))
+                          else await updateCreditBalance()
                           setCreditsModalOpen(false)
                         } catch (e: any) {
                           alert(e?.message || 'Failed to buy plan')
@@ -1067,6 +1417,228 @@ export default function PartnerDashboard() {
               </div>
             )}
           </div>
+        </Modal>
+
+        <Modal
+          open={!!acceptPromptOrder}
+          title="Order details"
+          className="max-w-5xl"
+          onClose={() => {
+            if (!acceptingOrderId) {
+              setAcceptPromptOrder(null)
+              setAcceptPromptStep('details')
+            }
+          }}
+        >
+          {acceptPromptOrder ? (
+            <div className="space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm text-slate-700">
+                    Order <span className="font-semibold">#{acceptPromptOrder.order_number ?? acceptPromptOrder.id}</span>
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    {acceptPromptOrder.pickup_date ? new Date(acceptPromptOrder.pickup_date).toDateString() : null}
+                    {acceptPromptOrder.time_slot ? ` • ${acceptPromptOrder.time_slot}` : ''}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border bg-white px-3 py-2 text-right">
+                  <div className="text-[11px] text-slate-500">Distance from hub</div>
+                  <div className="text-sm font-semibold text-slate-900">
+                    {acceptPromptDistanceKm == null ? '—' : `${acceptPromptDistanceKm.toFixed(1)} km`}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="rounded-2xl border bg-white overflow-hidden">
+                  <div className="aspect-[4/3] bg-slate-50">
+                    <img
+                      src="/images/phone-placeholder.svg"
+                      alt="Phone"
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                    />
+                  </div>
+                  <div className="p-4 space-y-3">
+                    <div>
+                      <div className="text-xs text-slate-500">Device</div>
+                      <div className="mt-1 text-base font-semibold text-slate-900">
+                        {acceptPromptOrder.phone_model}{acceptPromptOrder.phone_variant ? ` • ${acceptPromptOrder.phone_variant}` : ''}
+                      </div>
+                      <div className="mt-1 text-sm text-slate-600">Condition: {acceptPromptOrder.phone_condition || '—'}</div>
+                    </div>
+
+                    <div className="rounded-xl border bg-slate-50 p-3">
+                      <div className="text-[11px] text-slate-500">Price</div>
+                      <div className="mt-1 font-semibold text-slate-900 tabular-nums">₹{Number(acceptPromptOrder.price ?? 0).toLocaleString()}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border bg-white p-4 space-y-4">
+                  <div>
+                    <div className="text-xs text-slate-500">Customer</div>
+                    <div className="mt-1 font-semibold text-slate-900">{acceptPromptOrder.customer_name || '—'}</div>
+                    <div className="mt-1 text-sm text-slate-600">{acceptPromptOrder.customer_phone || '—'}</div>
+                  </div>
+
+                  <div>
+                    <div className="text-xs text-slate-500">Pickup address</div>
+                    <div className="mt-1 text-sm text-slate-900 break-words">{acceptPromptOrder.full_address || '—'}</div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      {acceptPromptOrder.city ?? '—'}
+                      {acceptPromptOrder.state ? `, ${acceptPromptOrder.state}` : ''}
+                      {acceptPromptOrder.pincode ? ` • ${acceptPromptOrder.pincode}` : ''}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="rounded-xl border bg-slate-50 p-3">
+                      <div className="text-[11px] text-slate-500">Pickup location</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900">
+                        {Number(acceptPromptOrder.latitude).toFixed(4)}, {Number(acceptPromptOrder.longitude).toFixed(4)}
+                      </div>
+                      <a
+                        className="mt-1 inline-block text-xs text-brand-600 hover:text-brand-700"
+                        href={`https://www.google.com/maps?q=${encodeURIComponent(
+                          `${acceptPromptOrder.latitude},${acceptPromptOrder.longitude}`,
+                        )}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open in Google Maps
+                      </a>
+                    </div>
+
+                    <div className="rounded-xl border bg-slate-50 p-3">
+                      <div className="text-[11px] text-slate-500">Hub location</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900">
+                        {effectiveHub ? `${effectiveHub.lat.toFixed(4)}, ${effectiveHub.lng.toFixed(4)}` : '—'}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-600">
+                        {acceptPromptDistanceKm == null ? 'Distance: —' : `Distance: ${acceptPromptDistanceKm.toFixed(1)} km`}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border bg-white p-4 space-y-3">
+                  {(() => {
+                    const price = Number(acceptPromptOrder.price ?? 0)
+                    const requiredCredits = Number(acceptPromptOrder.required_credits ?? acceptPromptOrder.credits ?? 0)
+                    const maxDiscount = Number(
+                      (acceptPromptOrder as any).potential_discount_amount ?? acceptPromptOrder.max_discount_rupees ?? 0,
+                    )
+                    const payableWithCredits = Math.max(0, price - maxDiscount)
+                    return (
+                      <>
+                        <div>
+                          <div className="text-xs text-slate-500">Credits</div>
+                          <div className="mt-1 grid grid-cols-2 gap-3">
+                            <div className="rounded-xl border bg-slate-50 p-3">
+                              <div className="text-[11px] text-slate-500">Your credits</div>
+                              <div className="mt-1 font-semibold text-slate-900 tabular-nums break-all">
+                                {creditBalance == null ? '—' : Number(creditBalance).toLocaleString()}
+                              </div>
+                            </div>
+                            <div className="rounded-xl border bg-slate-50 p-3">
+                              <div className="text-[11px] text-slate-500">Required</div>
+                              <div className="mt-1 font-semibold text-slate-900 tabular-nums">{requiredCredits.toLocaleString()}</div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border bg-slate-50 p-3">
+                          <div className="text-[11px] text-slate-500">Max discount</div>
+                          {maxDiscount > 0 ? (
+                            <div className="mt-1 font-semibold text-emerald-700 tabular-nums">₹{maxDiscount.toLocaleString()}</div>
+                          ) : (
+                            <div className="mt-1 text-sm text-slate-600">—</div>
+                          )}
+                          {maxDiscount > 0 ? (
+                            <div className="mt-1 text-[11px] text-slate-500">Applied only if you choose “Use credits”.</div>
+                          ) : null}
+                        </div>
+
+                        <div>
+                          <div className="text-xs text-slate-500">Payment</div>
+                          <div className="mt-1 grid grid-cols-1 gap-3">
+                            <div className="rounded-xl border bg-slate-50 p-3">
+                              <div className="text-[11px] text-slate-500">Payable (without credits)</div>
+                              <div className="mt-1 font-semibold text-slate-900 tabular-nums">₹{price.toLocaleString()}</div>
+                            </div>
+                            <div className="rounded-xl border bg-slate-50 p-3">
+                              <div className="text-[11px] text-slate-500">Payable (with credits)</div>
+                              <div className="mt-1 font-semibold text-slate-900 tabular-nums">₹{payableWithCredits.toLocaleString()}</div>
+                              {maxDiscount > 0 ? (
+                                <div className="mt-1 text-xs text-emerald-700">Saves up to ₹{maxDiscount.toLocaleString()}</div>
+                              ) : (
+                                <div className="mt-1 text-xs text-slate-500">No discount configured.</div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="pt-2">
+                          {acceptPromptStep === 'details' ? (
+                            <div className="space-y-2">
+                              <Button
+                                variant="secondary"
+                                disabled={!!acceptingOrderId}
+                                onClick={() => {
+                                  if (acceptingOrderId) return
+                                  setAcceptPromptOrder(null)
+                                  setAcceptPromptStep('details')
+                                }}
+                                className="w-full"
+                              >
+                                Close
+                              </Button>
+                              <Button
+                                disabled={!!acceptingOrderId}
+                                onClick={() => setAcceptPromptStep('payment')}
+                                className="w-full"
+                              >
+                                Continue
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <Button
+                                variant="secondary"
+                                disabled={!!acceptingOrderId}
+                                onClick={() => setAcceptPromptStep('details')}
+                                className="w-full"
+                              >
+                                Back
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                disabled={!!acceptingOrderId}
+                                onClick={() => acceptWithChoice(acceptPromptOrder, false)}
+                                className="w-full"
+                              >
+                                Accept without credits
+                              </Button>
+                              <Button
+                                disabled={!!acceptingOrderId}
+                                onClick={() => acceptWithChoice(acceptPromptOrder, true)}
+                                className="w-full"
+                              >
+                                Use credits & accept
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )
+                  })()}
+                </div>
+              </div>
+            </div>
+          ) : null}
         </Modal>
 
         {tab === 'take-orders' ? (
@@ -1139,8 +1711,24 @@ export default function PartnerDashboard() {
                             </div>
                           </div>
                           <div className="text-right shrink-0">
-                            <div className="font-semibold">₹{Number(o.price).toLocaleString()}</div>
+                            {(() => {
+                              const finalPrice = Number(o.price ?? 0)
+                              const orig = Number((o as any).original_price ?? finalPrice)
+                              const saved = Math.max(0, orig - finalPrice)
+                              return saved > 0 ? (
+                                <div>
+                                  <div className="text-xs text-slate-500 line-through">₹{orig.toLocaleString()}</div>
+                                  <div className="font-semibold">₹{finalPrice.toLocaleString()}</div>
+                                  <div className="text-xs text-emerald-700">Saved ₹{saved.toLocaleString()}</div>
+                                </div>
+                              ) : (
+                                <div className="font-semibold">₹{finalPrice.toLocaleString()}</div>
+                              )
+                            })()}
                             <div className="text-xs text-slate-500">Credits: {Number(o.required_credits ?? 0)}</div>
+                            {Number((o as any).potential_discount_amount ?? 0) > 0 ? (
+                              <div className="text-xs text-slate-500">Discount: up to ₹{Number((o as any).potential_discount_amount ?? 0).toLocaleString()}</div>
+                            ) : null}
                             <div className="text-xs text-slate-500">{new Date(o.pickup_date).toDateString()}</div>
                           </div>
                         </div>
@@ -1190,42 +1778,14 @@ export default function PartnerDashboard() {
                         <div className="flex flex-col sm:flex-row gap-2 pt-2 sm:items-center">
                           {!acceptedOrderIds.has(o.id) ? (
                             <Button
-                              onClick={async () => {
-                                setAcceptingOrderId(o.id)
-                                try {
-                                  console.log('Accepting order:', o.id)
-                                  const resp = await acceptOrder(o.id)
-                                  console.log('Accept response:', resp)
-                                  if (!resp.success) {
-                                    alert(resp.message || 'Failed to accept order')
-                                    return
-                                  }
-                                  setAcceptedAtById((prev) => ({ ...prev, [o.id]: new Date().toISOString() }))
-                                  setAcceptedOrderIds((prev) => new Set(prev).add(o.id))
-                                  setTakeOrdersFilter('accepted')
-                                  await refresh()
-                                } catch (e: any) {
-                                  const err = e as ApiError
-                                  if (err?.status === 402) {
-                                    const required = err?.data?.required_credits
-                                    const balance = err?.data?.balance
-                                    alert(
-                                      required != null && balance != null
-                                        ? `Insufficient Credits (need ${required}, have ${balance}). Please buy a plan.`
-                                        : 'Insufficient Credits. Please buy a plan.',
-                                    )
-                                    setCreditsModalOpen(true)
-                                    return
-                                  }
-                                  alert(err?.message || 'Failed to accept order')
-                                } finally {
-                                  setAcceptingOrderId(null)
-                                }
+                              onClick={() => {
+                                setAcceptPromptOrder(o)
+                                setAcceptPromptStep('details')
                               }}
-                              disabled={acceptingOrderId === o.id}
+                              disabled={!!acceptingOrderId}
                               size="sm"
                             >
-                              {acceptingOrderId === o.id ? 'Accepting...' : 'Accept Order'}
+                              Accept Order
                             </Button>
                           ) : (
                             <>
@@ -1244,6 +1804,43 @@ export default function PartnerDashboard() {
                                     <Users className="h-4 w-4" /> Assign Agent
                                   </div>
                                   <div className="flex-1" />
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    disabled={!!returningOrderId || !!acceptingOrderId}
+                                    onClick={async () => {
+                                      if (returningOrderId || acceptingOrderId) return
+                                      const ok = window.confirm('Release this order back to Unaccepted (make it available again)?')
+                                      if (!ok) return
+                                      setReturningOrderId(o.id)
+                                      try {
+                                        const resp = await unacceptOrder(o.id)
+                                        if (!resp.success) {
+                                          alert(resp.message || 'Failed to send order back')
+                                          return
+                                        }
+                                        setAcceptedOrderIds((prev) => {
+                                          const next = new Set(prev)
+                                          next.delete(o.id)
+                                          return next
+                                        })
+                                        setAcceptedAtById((prev) => {
+                                          const next = { ...prev }
+                                          delete next[o.id]
+                                          return next
+                                        })
+                                        setTakeOrdersFilter('unaccepted')
+                                        await updateCreditBalance()
+                                        await refresh('all')
+                                      } catch (e: any) {
+                                        alert(e?.message || 'Failed to send order back')
+                                      } finally {
+                                        setReturningOrderId(null)
+                                      }
+                                    }}
+                                  >
+                                    {returningOrderId === o.id ? 'Releasing…' : 'Release order'}
+                                  </Button>
                                   <div className="w-full sm:w-72">
                                     {(() => {
                                       const blocked = new Set(o.blocked_agent_ids ?? [])
@@ -1261,7 +1858,7 @@ export default function PartnerDashboard() {
                                               alert(resp.message || 'Failed to assign order')
                                               return
                                             }
-                                            await refresh()
+                                            applyOrderAssignment(o.id, agentId)
                                             setAcceptedOrderIds(prev => new Set(prev).add(o.id))
                                           }}
                                         >

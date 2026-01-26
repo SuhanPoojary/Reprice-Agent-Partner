@@ -21,13 +21,23 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
   const canSignup = role !== 'agent'
 
   const [mode, setMode] = useState<Mode>('login')
+  const [step, setStep] = useState<1 | 2>(1)
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+
+  // Partner application fields
+  const [companyName, setCompanyName] = useState('')
+  const [businessAddress, setBusinessAddress] = useState('')
+  const [gstNumber, setGstNumber] = useState('')
+  const [panNumber, setPanNumber] = useState('')
+  const [applicationNote, setApplicationNote] = useState('')
+
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
 
   const effectiveMode: Mode = canSignup ? mode : 'login'
 
@@ -42,6 +52,7 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
+    setSuccess(null)
     setLoading(true)
 
     try {
@@ -59,9 +70,46 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
           return
         }
 
+        if (role === 'partner' && !email.trim()) {
+          setError('Email is required so admin can contact you.')
+          return
+        }
+
+        // Partner signup is a 2-step flow.
+        if (role === 'partner' && step === 1) {
+          setStep(2)
+          return
+        }
+
+        if (role === 'partner') {
+          if (!companyName.trim()) {
+            setError('Please enter your company name.')
+            return
+          }
+          if (!businessAddress.trim()) {
+            setError('Please enter your business address.')
+            return
+          }
+        }
+
         const normalizedEmail = email.trim() || undefined
 
-        await signupPartnerWithPassword(name.trim(), normalizedPhone, password, normalizedEmail)
+        const msg = await signupPartnerWithPassword(name.trim(), normalizedPhone, password, normalizedEmail, {
+          companyName: companyName.trim() || undefined,
+          businessAddress: businessAddress.trim() || undefined,
+          gstNumber: gstNumber.trim() || undefined,
+          panNumber: panNumber.trim() || undefined,
+          messageFromPartner: applicationNote.trim() || undefined,
+        })
+
+        setSuccess(
+          msg ||
+            'Application submitted. Admin will review and contact you via email if approved. You can login after approval.',
+        )
+        setMode('login')
+        setStep(1)
+        setPassword('')
+        return
       }
 
       navigate(afterAuthNavigateTo)
@@ -155,6 +203,12 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
               </div>
             ) : null}
 
+            {success ? (
+              <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-sm">
+                {success}
+              </div>
+            ) : null}
+
             <form onSubmit={onSubmit} className="space-y-4">
               {effectiveMode === 'signup' ? (
                 <div className="space-y-2">
@@ -169,6 +223,27 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
                       required
                     />
                   </div>
+                </div>
+              ) : null}
+
+              {effectiveMode === 'signup' && role === 'partner' ? (
+                <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="text-sm text-slate-600">
+                    Application step <span className="font-semibold text-slate-800">{step}</span> of{' '}
+                    <span className="font-semibold text-slate-800">2</span>
+                  </div>
+                  {step === 2 ? (
+                    <button
+                      type="button"
+                      className="text-sm font-medium text-blue-700 hover:text-blue-800"
+                      onClick={() => {
+                        setStep(1)
+                        setError(null)
+                      }}
+                    >
+                      Back
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -188,7 +263,9 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
 
               {effectiveMode === 'signup' ? (
                 <div className="space-y-2">
-                  <div className="text-slate-700 font-medium text-sm">Email (Optional)</div>
+                  <div className="text-slate-700 font-medium text-sm">
+                    Email {role === 'partner' ? '*' : '(Optional)'}
+                  </div>
                   <div className="relative">
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
                     <Input
@@ -197,6 +274,65 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="your@email.com"
                       type="email"
+                      required={role === 'partner'}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              {effectiveMode === 'signup' && role === 'partner' && step === 2 ? (
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <div className="text-slate-700 font-medium text-sm">Company Name *</div>
+                    <Input
+                      className="h-11"
+                      value={companyName}
+                      onChange={(e) => setCompanyName(e.target.value)}
+                      placeholder="Your business / company name"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-slate-700 font-medium text-sm">Business Address *</div>
+                    <Input
+                      className="h-11"
+                      value={businessAddress}
+                      onChange={(e) => setBusinessAddress(e.target.value)}
+                      placeholder="Street, area, city, state"
+                      required
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <div className="text-slate-700 font-medium text-sm">GST Number (Optional)</div>
+                      <Input
+                        className="h-11"
+                        value={gstNumber}
+                        onChange={(e) => setGstNumber(e.target.value)}
+                        placeholder="GSTIN"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="text-slate-700 font-medium text-sm">PAN Number (Optional)</div>
+                      <Input
+                        className="h-11"
+                        value={panNumber}
+                        onChange={(e) => setPanNumber(e.target.value)}
+                        placeholder="PAN"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-slate-700 font-medium text-sm">Note to Admin (Optional)</div>
+                    <Input
+                      className="h-11"
+                      value={applicationNote}
+                      onChange={(e) => setApplicationNote(e.target.value)}
+                      placeholder="Anything you want to mention for verification"
                     />
                   </div>
                 </div>
@@ -232,10 +368,14 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
                 {loading
                   ? effectiveMode === 'login'
                     ? 'Signing in…'
-                    : 'Creating account…'
+                    : role === 'partner' && step === 1
+                      ? 'Continuing…'
+                      : 'Submitting application…'
                   : effectiveMode === 'login'
                     ? 'LOGIN'
-                    : 'CREATE ACCOUNT'}
+                    : role === 'partner' && step === 1
+                      ? 'CONTINUE'
+                      : 'SUBMIT APPLICATION'}
               </Button>
             </form>
           </div>

@@ -6,11 +6,13 @@ export function Modal({
   open,
   title,
   onClose,
+  className,
   children,
 }: {
   open: boolean
   title?: string
   onClose: () => void
+  className?: string
   children: React.ReactNode
 }) {
   if (!open) return null
@@ -22,7 +24,7 @@ export function Modal({
         aria-hidden
       />
       <div className="absolute inset-0 grid place-items-center p-4">
-        <div className={cn('w-full max-w-lg rounded-2xl border bg-white shadow-soft')}>
+        <div className={cn('w-full max-w-lg max-h-[85vh] rounded-2xl border bg-white shadow-soft flex flex-col', className)}>
           <div className="flex items-center justify-between px-5 py-4 border-b">
             <div className="text-sm font-semibold">{title ?? 'Dialog'}</div>
             <button
@@ -33,7 +35,7 @@ export function Modal({
               <X className="h-4 w-4" />
             </button>
           </div>
-          <div className="p-5">{children}</div>
+          <div className="p-5 overflow-y-auto">{children}</div>
         </div>
       </div>
     </div>
