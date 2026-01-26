@@ -1,6 +1,7 @@
 export type ApiError = {
   status: number
   message: string
+  data?: any
 }
 
 const DEFAULT_BASE = import.meta.env.DEV
@@ -43,7 +44,7 @@ export async function apiFetch<T>(
 
   if (!res.ok) {
     const message = data?.message || data?.error || `Request failed (${res.status})`
-    throw { status: res.status, message } satisfies ApiError
+    throw { status: res.status, message, data } satisfies ApiError
   }
 
   return data as T

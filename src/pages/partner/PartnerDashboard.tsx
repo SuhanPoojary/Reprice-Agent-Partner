@@ -13,9 +13,14 @@ import {
   getPartnerOrders,
   getAvailableOrders,
   acceptOrder,
+  getMyCreditBalance,
+  listMyCreditPlans,
+  buyCreditPlan,
+  type PartnerCreditPlan,
   type PartnerAgent,
   type PartnerOrder,
 } from '../../api/partner'
+import type { ApiError } from '../../api/client'
 import type { Agent as MapAgent, Order as MapOrder } from '../../mock/types'
 import { Modal } from '../../components/ui/Modal'
 import { Input } from '../../components/ui/Input'
@@ -67,6 +72,11 @@ export default function PartnerDashboard() {
   const [error, setError] = useState<string | null>(null)
   const [acceptingOrderId, setAcceptingOrderId] = useState<string | null>(null)
 
+  const [creditBalance, setCreditBalance] = useState<number | null>(null)
+  const [creditPlans, setCreditPlans] = useState<PartnerCreditPlan[]>([])
+  const [creditsModalOpen, setCreditsModalOpen] = useState(false)
+  const [buyingPlanId, setBuyingPlanId] = useState<number | null>(null)
+
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
@@ -108,15 +118,29 @@ export default function PartnerDashboard() {
     setLoading(true)
     setError(null)
     try {
-      const [o, ao, a] = await Promise.all([getPartnerOrders(), getAvailableOrders(), getPartnerAgents()])
+      const [o, ao, a, b] = await Promise.all([
+        getPartnerOrders(),
+        getAvailableOrders(),
+        getPartnerAgents(),
+        getMyCreditBalance(),
+      ])
       console.log('Refresh - orders with agents:', o.success ? o.orders.length : 'failed')
       console.log('Refresh - available orders (unassigned):', ao.success ? ao.orders.length : 'failed')
       if (ao.success) {
         console.log('Available orders partner_accepted status:', ao.orders.map(x => ({ id: x.id, partner_accepted: x.partner_accepted })))
       }
-      if (o.success) setOrders(o.orders)
+      if (o.success) {
+        setOrders(o.orders)
+        const acceptedFromBackend = new Set(o.orders.filter((x) => x.partner_accepted).map((x) => x.id))
+        setAcceptedOrderIds((prev) => {
+          const next = new Set(prev)
+          for (const id of acceptedFromBackend) next.add(id)
+          return next
+        })
+      }
       if (ao.success) setAvailableOrders(ao.orders)
       if (a.success) setAgents(a.agents)
+      if (b.success) setCreditBalance(Number(b.balance))
     } catch (e: any) {
       setError(e?.message ?? 'Failed to load partner data')
     } finally {
@@ -471,7 +495,7 @@ export default function PartnerDashboard() {
 
         {tab === 'orders' ? (
           <>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
               <Card>
                 <CardContent className="p-4">
                   <div className="text-xs text-slate-500">Pending</div>
@@ -488,6 +512,33 @@ export default function PartnerDashboard() {
                 <CardContent className="p-4">
                   <div className="text-xs text-slate-500">Completed</div>
                   <div className="text-2xl font-semibold">{stats.completed}</div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs text-slate-500">Credits</div>
+                      <div className="text-2xl font-semibold">{creditBalance == null ? '—' : creditBalance}</div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={async () => {
+                        try {
+                          const r = await listMyCreditPlans()
+                          if (r.success) setCreditPlans(r.plans)
+                        } catch {
+                          // ignore
+                        } finally {
+                          setCreditsModalOpen(true)
+                        }
+                      }}
+                    >
+                      Buy
+                    </Button>
+                  </div>
+                  <div className="mt-1 text-[11px] text-slate-500">Used when accepting an order.</div>
                 </CardContent>
               </Card>
             </div>
@@ -850,7 +901,7 @@ export default function PartnerDashboard() {
               />
             </div>
             <div className="space-y-1">
-              <div className="text-xs text-slate-600">Phone (optional)</div>
+              <div className="text-xs text-slate-600">Phone </div>
               <Input
                 value={createForm.phone}
                 onChange={(e) => setCreateForm((s) => ({ ...s, phone: e.target.value }))}
@@ -968,6 +1019,56 @@ export default function PartnerDashboard() {
           ) : null}
         </Modal>
 
+        <Modal open={creditsModalOpen} title="Buy Credits" onClose={() => setCreditsModalOpen(false)}>
+          <div className="space-y-3">
+            <div className="text-sm text-slate-700">
+              Current balance: <span className="font-semibold">{creditBalance == null ? '—' : creditBalance}</span>
+            </div>
+
+            {creditPlans.length === 0 ? (
+              <div className="text-sm text-slate-600">
+                No plans loaded yet. Try again.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {creditPlans.map((p) => (
+                  <div key={p.id} className="rounded-xl border bg-white p-3 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900">{p.plan_name}</div>
+                      <div className="text-xs text-slate-600">
+                        Credits: {Number(p.credit_amount)} • Price: ₹{Number(p.price).toLocaleString()}
+                      </div>
+                      {p.description ? <div className="text-xs text-slate-500 mt-1">{p.description}</div> : null}
+                    </div>
+                    <Button
+                      size="sm"
+                      disabled={buyingPlanId === p.id}
+                      onClick={async () => {
+                        setBuyingPlanId(p.id)
+                        try {
+                          const r = await buyCreditPlan(p.id)
+                          if (!r.success) {
+                            alert(r.message || 'Failed to buy plan')
+                            return
+                          }
+                          await refresh()
+                          setCreditsModalOpen(false)
+                        } catch (e: any) {
+                          alert(e?.message || 'Failed to buy plan')
+                        } finally {
+                          setBuyingPlanId(null)
+                        }
+                      }}
+                    >
+                      {buyingPlanId === p.id ? 'Buying…' : 'Buy'}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Modal>
+
         {tab === 'take-orders' ? (
           <>
             <div className="space-y-4">
@@ -1039,6 +1140,7 @@ export default function PartnerDashboard() {
                           </div>
                           <div className="text-right shrink-0">
                             <div className="font-semibold">₹{Number(o.price).toLocaleString()}</div>
+                            <div className="text-xs text-slate-500">Credits: {Number(o.required_credits ?? 0)}</div>
                             <div className="text-xs text-slate-500">{new Date(o.pickup_date).toDateString()}</div>
                           </div>
                         </div>
@@ -1098,11 +1200,24 @@ export default function PartnerDashboard() {
                                     alert(resp.message || 'Failed to accept order')
                                     return
                                   }
-                                  // Persist acceptance locally (no DB change)
                                   setAcceptedAtById((prev) => ({ ...prev, [o.id]: new Date().toISOString() }))
-                                  setAcceptedOrderIds(prev => new Set(prev).add(o.id))
-                                  console.log('Setting filter to accepted')
+                                  setAcceptedOrderIds((prev) => new Set(prev).add(o.id))
                                   setTakeOrdersFilter('accepted')
+                                  await refresh()
+                                } catch (e: any) {
+                                  const err = e as ApiError
+                                  if (err?.status === 402) {
+                                    const required = err?.data?.required_credits
+                                    const balance = err?.data?.balance
+                                    alert(
+                                      required != null && balance != null
+                                        ? `Insufficient Credits (need ${required}, have ${balance}). Please buy a plan.`
+                                        : 'Insufficient Credits. Please buy a plan.',
+                                    )
+                                    setCreditsModalOpen(true)
+                                    return
+                                  }
+                                  alert(err?.message || 'Failed to accept order')
                                 } finally {
                                   setAcceptingOrderId(null)
                                 }

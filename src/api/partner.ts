@@ -25,6 +25,12 @@ export type PartnerOrder = {
   agent_id?: string | null
   partner_accepted?: boolean
 
+  // Credits (backend computed)
+  required_credits?: number
+  credit_product_key?: string
+  partner_id?: string | null
+  credits_charged?: number | null
+
   customer_name: string
   customer_phone?: string | null
 
@@ -41,6 +47,16 @@ export type PartnerOrder = {
   // Non-persistent (in-memory) backend hints
   blocked_agent_ids?: string[]
   returned_at?: string | null
+}
+
+export type PartnerCreditPlan = {
+  id: number
+  plan_name: string
+  credit_amount: number
+  price: number
+  bonus_percentage: number
+  description?: string | null
+  is_active: boolean
 }
 
 export async function getPartnerOrders() {
@@ -81,5 +97,28 @@ export async function createPartnerAgent(input: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
+  })
+}
+
+export async function getMyCreditBalance() {
+  return apiFetch<{ success: boolean; balance: number }>(`/partner/credits/balance`, { method: 'GET' })
+}
+
+export async function getMyCreditHistory(limit = 200) {
+  return apiFetch<{ success: boolean; transactions: any[] }>(
+    `/partner/credits/history?limit=${encodeURIComponent(String(limit))}`,
+    { method: 'GET' },
+  )
+}
+
+export async function listMyCreditPlans() {
+  return apiFetch<{ success: boolean; plans: PartnerCreditPlan[] }>(`/partner/credits/plans`, { method: 'GET' })
+}
+
+export async function buyCreditPlan(planId: number | string) {
+  return apiFetch<{ success: boolean; balance?: number; message?: string }>(`/partner/credits/plans/${planId}/buy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
   })
 }
