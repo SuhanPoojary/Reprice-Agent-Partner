@@ -7,7 +7,6 @@ import { ORDER_STATUS_LABEL } from '../../lib/status'
 export type OrderFilterState = {
   query: string
   status: 'all' | string
-  maxDistanceKm: number
 }
 
 export function OrderFilters({
@@ -28,12 +27,12 @@ export function OrderFilters({
         <div className="flex flex-col lg:flex-row lg:items-center gap-3">
           <div className="flex items-center gap-2">
             <div className="text-sm font-semibold">Orders</div>
-            <Badge className="bg-slate-100 text-slate-700 border-slate-200">{withinCount} within range</Badge>
+            <Badge className="bg-slate-100 text-slate-700 border-slate-200">{withinCount} serviceable</Badge>
           </div>
 
           <div className="flex-1" />
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full lg:w-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full lg:w-auto">
             <Input
               placeholder="Search by ID / customer"
               value={value.query}
@@ -48,17 +47,6 @@ export function OrderFilters({
               {Object.entries(options).map(([k, label]) => (
                 <option key={k} value={k}>
                   {label}
-                </option>
-              ))}
-            </Select>
-
-            <Select
-              value={String(value.maxDistanceKm)}
-              onChange={(e) => onChange({ ...value, maxDistanceKm: Number(e.target.value) })}
-            >
-              {[1, 2, 5, 10, 20].map((km) => (
-                <option key={km} value={km}>
-                  Within {km} km
                 </option>
               ))}
             </Select>

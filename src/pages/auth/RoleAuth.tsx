@@ -31,7 +31,7 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
   // Partner application fields
   const [companyName, setCompanyName] = useState('')
   const [businessAddress, setBusinessAddress] = useState('')
-  const [serviceablePincode, setServiceablePincode] = useState('')
+  const [pincode, setPincode] = useState('')
   const [gstNumber, setGstNumber] = useState('')
   const [panNumber, setPanNumber] = useState('')
   const [applicationNote, setApplicationNote] = useState('')
@@ -119,8 +119,13 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
             setError('Please enter your business address.')
             return
           }
-          if (!serviceablePincode.trim()) {
-            setError('Please enter your serviceable pincode.')
+          const normalizedPincode = pincode.trim()
+          if (!normalizedPincode) {
+            setError('Please enter your service pincode.')
+            return
+          }
+          if (!/^\d{6}$/.test(normalizedPincode)) {
+            setError('Please enter a valid 6-digit pincode.')
             return
           }
         }
@@ -130,7 +135,7 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
         const resp = await signupPartnerWithPassword(name.trim(), normalizedPhone, password, normalizedEmail, {
           companyName: companyName.trim() || undefined,
           businessAddress: businessAddress.trim() || undefined,
-          serviceablePincode: serviceablePincode.trim() || undefined,
+          pincode: pincode.trim() || undefined,
           gstNumber: gstNumber.trim() || undefined,
           panNumber: panNumber.trim() || undefined,
           messageFromPartner: applicationNote.trim() || undefined,
@@ -368,15 +373,22 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-slate-700 font-medium text-sm">Serviceable Pincode *</div>
+                    <div className="text-slate-700 font-medium text-sm">Service Pincode *</div>
                     <Input
-                      className="h-11"
-                      value={serviceablePincode}
-                      onChange={(e) => setServiceablePincode(e.target.value)}
-                      placeholder="e.g. 400001"
-                      inputMode="numeric"
-                      required
-                    />
+  type="text"
+  className="h-11"
+  value={pincode}
+  onChange={(e) => {
+    const val = e.target.value.replace(/\D/g, "");
+    setPincode(val);
+  }}
+  placeholder="6-digit pincode"
+  inputMode="numeric"
+  pattern="\d{6}"
+  maxLength={6}
+  required
+/>
+
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
