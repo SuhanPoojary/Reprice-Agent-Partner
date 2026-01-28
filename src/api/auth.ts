@@ -7,6 +7,7 @@ export type PartnerVerificationStatus = 'approved' | 'pending' | 'rejected' | 'c
 export type PartnerApplicationInput = {
   companyName?: string
   businessAddress?: string
+  pincode?: string
   gstNumber?: string
   panNumber?: string
   messageFromPartner?: string
@@ -112,6 +113,7 @@ export async function signupPartner(
       userType: 'partner',
       company_name: application?.companyName,
       business_address: application?.businessAddress,
+      pincode: application?.pincode,
       gst_number: application?.gstNumber,
       pan_number: application?.panNumber,
       message_from_partner: application?.messageFromPartner,

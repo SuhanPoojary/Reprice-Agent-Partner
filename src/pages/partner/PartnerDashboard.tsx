@@ -5,7 +5,6 @@ import { Button } from '../../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
 import { OrderFilters, type OrderFilterState } from '../../components/orders/OrderFilters'
 import { PartnerMap, type PartnerMapHandle } from '../../components/map/PartnerMap'
-import { distanceKm } from '../../lib/geo'
 import {
   assignOrderToAgent,
   createPartnerAgent,
@@ -17,6 +16,7 @@ import {
   getMyCreditBalance,
   listMyCreditPlans,
   buyCreditPlan,
+  updatePartnerHubLocation,
   type PartnerCreditPlan,
   type PartnerAgent,
   type PartnerOrder,
@@ -59,8 +59,8 @@ export default function PartnerDashboard() {
   const { user } = useAuth()
   const [tab, setTab] = useState<PartnerTab>('orders')
   const [ordersPanel, setOrdersPanel] = useState<'orders' | 'agents'>('orders')
-  const [viewMode, setViewMode] = useState<'map' | 'list'>('map')
-  const [filters, setFilters] = useState<OrderFilterState>({ query: '', status: 'all', maxDistanceKm: 5 })
+  const [viewMode, setViewMode] = useState<'map' | 'list'>('list')
+  const [filters, setFilters] = useState<OrderFilterState>({ query: '', status: 'all' })
   const [takeOrdersFilter, setTakeOrdersFilter] = useState<'accepted' | 'unaccepted'>('unaccepted')
   const [acceptedOrderIds, setAcceptedOrderIds] = useState<Set<string>>(new Set())
   const [acceptedAtById, setAcceptedAtById] = useState<Record<string, string>>({})
@@ -119,6 +119,24 @@ export default function PartnerDashboard() {
     error: hubError,
   } = usePartnerHubLocation()
 
+  const lastHubSyncRef = useRef<{ lat: number; lng: number } | null>(null)
+  useEffect(() => {
+    if (!hub) return
+
+    const prev = lastHubSyncRef.current
+    const changed = !prev || prev.lat !== hub.lat || prev.lng !== hub.lng
+    if (!changed) return
+    lastHubSyncRef.current = { lat: hub.lat, lng: hub.lng }
+
+    ;(async () => {
+      try {
+        await updatePartnerHubLocation({ latitude: hub.lat, longitude: hub.lng })
+      } catch {
+        // best-effort
+      }
+    })()
+  }, [hub])
+
   const effectiveHub = useMemo(() => {
     if (hub) return hub
     const fromOrder = orders[0] ?? availableOrders[0]
@@ -128,16 +146,11 @@ export default function PartnerDashboard() {
     return null
   }, [hub, orders, availableOrders, agents])
 
-  const acceptPromptDistanceKm = useMemo(() => {
-    if (!acceptPromptOrder) return null
-    if (!effectiveHub) return null
-    return distanceKm(effectiveHub, { lat: acceptPromptOrder.latitude, lng: acceptPromptOrder.longitude })
-  }, [acceptPromptOrder, effectiveHub])
-
   const didAutoLocateRef = useRef(false)
   useEffect(() => {
     if (tab !== 'orders') return
     if (didAutoLocateRef.current) return
+    if (viewMode !== 'map') return
     didAutoLocateRef.current = true
     ;(async () => {
       try {
@@ -147,7 +160,7 @@ export default function PartnerDashboard() {
         // permission denied/unavailable; error shown inline
       }
     })()
-  }, [tab, requestLiveHub])
+  }, [tab, requestLiveHub, viewMode])
 
   const updateCreditBalance = useCallback(async () => {
     try {
@@ -272,35 +285,24 @@ export default function PartnerDashboard() {
     getPartnerAgents,
   ])
 
-  const ordersWithDistance = useMemo(() => {
-    if (!effectiveHub) return []
-    return orders
-      .map((o) => ({ o, d: distanceKm(effectiveHub, { lat: o.latitude, lng: o.longitude }) }))
-      .sort((a, b) => new Date(b.o.created_at ?? 0).getTime() - new Date(a.o.created_at ?? 0).getTime())
-  }, [orders, effectiveHub])
-
-  const withinDefaultRadius = useMemo(
-    () => ordersWithDistance.filter((x) => x.d <= 5).length,
-    [ordersWithDistance],
-  )
-
   const filteredOrders = useMemo(() => {
     const q = filters.query.trim().toLowerCase()
-    return ordersWithDistance
-      .filter((x) => x.d <= filters.maxDistanceKm)
-      .filter((x) => {
+    return orders
+      .slice()
+      .sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())
+      .filter((o) => {
         if (!q) return true
         return (
-          String(x.o.id).toLowerCase().includes(q) ||
-          x.o.customer_name.toLowerCase().includes(q) ||
-          x.o.phone_model.toLowerCase().includes(q)
+          String(o.id).toLowerCase().includes(q) ||
+          o.customer_name.toLowerCase().includes(q) ||
+          o.phone_model.toLowerCase().includes(q)
         )
       })
-        .filter((x) => (filters.status === 'all' ? true : x.o.status === filters.status))
-  }, [ordersWithDistance, filters])
+      .filter((o) => (filters.status === 'all' ? true : o.status === filters.status))
+  }, [orders, filters])
 
-        // Orders tab must only show latest 6 (after filters)
-        const latestSixFilteredOrders = useMemo(() => filteredOrders.slice(0, 6), [filteredOrders])
+  // Orders tab must only show latest 6 (after filters)
+  const latestSixFilteredOrders = useMemo(() => filteredOrders.slice(0, 6), [filteredOrders])
 
   const onlineAgents = useMemo(() => {
     const now = Date.now()
@@ -346,7 +348,7 @@ export default function PartnerDashboard() {
 
   const mapOrders = useMemo<MapOrder[]>(
     () =>
-      filteredOrders.map(({ o }) => ({
+      filteredOrders.map((o) => ({
         id: o.id,
         customerName: o.customer_name,
         phoneModel: o.phone_model,
@@ -388,35 +390,34 @@ export default function PartnerDashboard() {
     [onlineAgents, effectiveHub],
   )
 
-  const availableOrdersWithDistance = useMemo(() => {
-    if (!effectiveHub) return []
+  const availableOrdersSorted = useMemo(() => {
     return availableOrders
-      .map((o) => ({ o, d: distanceKm(effectiveHub, { lat: o.latitude, lng: o.longitude }) }))
-      .sort((a, b) => new Date(b.o.created_at ?? 0).getTime() - new Date(a.o.created_at ?? 0).getTime())
-  }, [availableOrders, effectiveHub])
+      .slice()
+      .sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())
+  }, [availableOrders])
 
   const takeOrdersItems = useMemo(() => {
     // Unaccepted = only truly available/unassigned orders.
     if (takeOrdersFilter === 'unaccepted') {
-      return availableOrdersWithDistance
-        .map((x) => ({ ...x, isAccepted: acceptedOrderIds.has(x.o.id) }))
+      return availableOrdersSorted
+        .map((o) => ({ o, isAccepted: acceptedOrderIds.has(o.id) }))
         .filter((x) => !x.isAccepted)
     }
 
     // Accepted = union of accepted available orders + accepted assigned orders.
-    const acceptedAvailable = availableOrdersWithDistance
-      .map((x) => ({ ...x, isAccepted: acceptedOrderIds.has(x.o.id) }))
+    const acceptedAvailable = availableOrdersSorted
+      .map((o) => ({ o, isAccepted: acceptedOrderIds.has(o.id) }))
       .filter((x) => x.isAccepted)
 
-    const acceptedAssigned = ordersWithDistance
-      .map((x) => ({ ...x, isAccepted: acceptedOrderIds.has(x.o.id) }))
+    const acceptedAssigned = orders
+      .map((o) => ({ o, isAccepted: acceptedOrderIds.has(o.id) }))
       .filter((x) => x.isAccepted)
 
-    const byId = new Map<string, { o: PartnerOrder; d: number; isAccepted: boolean }>()
+    const byId = new Map<string, { o: PartnerOrder; isAccepted: boolean }>()
     for (const x of acceptedAvailable) byId.set(x.o.id, x)
     for (const x of acceptedAssigned) byId.set(x.o.id, x)
     return Array.from(byId.values())
-  }, [availableOrdersWithDistance, ordersWithDistance, takeOrdersFilter, acceptedOrderIds])
+  }, [availableOrdersSorted, orders, takeOrdersFilter, acceptedOrderIds])
 
   const goToAcceptedSection = () => {
     setTab('take-orders')
@@ -604,19 +605,21 @@ export default function PartnerDashboard() {
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Partner Dashboard</h1>
-            <p className="text-sm text-slate-600">Orders and agents within your service radius.</p>
+            <p className="text-sm text-slate-600">Orders matched by your service PIN code.</p>
           </div>
           <div className="flex-1" />
-          <div className="text-xs text-slate-500">
-            Default view: within 5 km • Hub:{' '}
-            {effectiveHub ? (
-              <>
-                {effectiveHub.lat.toFixed(3)}, {effectiveHub.lng.toFixed(3)}
-              </>
-            ) : (
-              'Locating…'
-            )}
-          </div>
+          {viewMode === 'map' ? (
+            <div className="text-xs text-slate-500">
+              Hub:{' '}
+              {effectiveHub ? (
+                <>
+                  {effectiveHub.lat.toFixed(3)}, {effectiveHub.lng.toFixed(3)}
+                </>
+              ) : (
+                'Not set'
+              )}
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -687,7 +690,7 @@ export default function PartnerDashboard() {
             <OrderFilters
               value={filters}
               onChange={setFilters}
-              withinCount={withinDefaultRadius}
+              withinCount={filteredOrders.length}
               statusOptions={{
                 pending: 'Pending',
                 'in-progress': 'In Progress',
@@ -773,7 +776,7 @@ export default function PartnerDashboard() {
                   </Card>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                    {filteredOrders.map(({ o, d }) => (
+                    {filteredOrders.map((o) => (
                       <Card key={o.id} className="transition hover:-translate-y-0.5">
                         <CardHeader>
                           <div className="flex items-start justify-between gap-3">
@@ -790,7 +793,7 @@ export default function PartnerDashboard() {
                                 </span>
                               </CardTitle>
                               <div className="mt-1 text-xs text-slate-500">
-                                #{o.order_number ?? o.id} • {d.toFixed(1)} km
+                                #{o.order_number ?? o.id} • PIN {o.pincode || '—'}
                               </div>
                             </div>
                             <div className="text-right shrink-0">
@@ -885,7 +888,7 @@ export default function PartnerDashboard() {
                   <PartnerMap
                     ref={mapRef}
                     hub={effectiveHub}
-                    radiusKm={filters.maxDistanceKm}
+                    radiusKm={5}
                     orders={mapOrders}
                     agents={mapAgents}
                   />
@@ -938,7 +941,7 @@ export default function PartnerDashboard() {
                       <CardContent className="p-5 text-sm text-slate-600">No orders match the current filters.</CardContent>
                     </Card>
                   ) : (
-                    latestSixFilteredOrders.map(({ o, d }) => (
+                    latestSixFilteredOrders.map((o) => (
                       <Card key={o.id} className="transition hover:-translate-y-0.5">
                         <CardHeader>
                           <div className="flex items-start justify-between gap-3">
@@ -955,7 +958,7 @@ export default function PartnerDashboard() {
                                 </span>
                               </CardTitle>
                               <div className="mt-1 text-xs text-slate-500">
-                                #{o.order_number ?? o.id} • {d.toFixed(1)} km
+                                #{o.order_number ?? o.id} • PIN {o.pincode || '—'}
                               </div>
                             </div>
                             <div className="text-right shrink-0">
@@ -1444,10 +1447,8 @@ export default function PartnerDashboard() {
                 </div>
 
                 <div className="rounded-lg border bg-white px-3 py-2 text-right">
-                  <div className="text-[11px] text-slate-500">Distance from hub</div>
-                  <div className="text-sm font-semibold text-slate-900">
-                    {acceptPromptDistanceKm == null ? '—' : `${acceptPromptDistanceKm.toFixed(1)} km`}
-                  </div>
+                  <div className="text-[11px] text-slate-500">PIN Code</div>
+                  <div className="text-sm font-semibold text-slate-900">{acceptPromptOrder.pincode || '—'}</div>
                 </div>
               </div>
 
@@ -1517,9 +1518,7 @@ export default function PartnerDashboard() {
                       <div className="mt-1 text-sm font-semibold text-slate-900">
                         {effectiveHub ? `${effectiveHub.lat.toFixed(4)}, ${effectiveHub.lng.toFixed(4)}` : '—'}
                       </div>
-                      <div className="mt-1 text-xs text-slate-600">
-                        {acceptPromptDistanceKm == null ? 'Distance: —' : `Distance: ${acceptPromptDistanceKm.toFixed(1)} km`}
-                      </div>
+                      <div className="mt-1 text-xs text-slate-600">Service PIN: {acceptPromptOrder.pincode || '—'}</div>
                     </div>
                   </div>
                 </div>
@@ -1691,7 +1690,7 @@ export default function PartnerDashboard() {
                       const bKey = Math.max(Number.isFinite(bReturnedAt) ? bReturnedAt : 0, Number.isFinite(bAcceptedAt) ? bAcceptedAt : 0)
                       return bKey - aKey
                     })
-                    .map(({ o, d }) => (
+                    .map(({ o }) => (
                     <Card key={o.id} className="transition hover:-translate-y-0.5">
                       <CardHeader>
                         <div className="flex items-start justify-between gap-3">
@@ -1707,7 +1706,7 @@ export default function PartnerDashboard() {
                               </span>
                             </CardTitle>
                             <div className="mt-1 text-xs text-slate-500">
-                              #{o.order_number ?? o.id} • {d.toFixed(1)} km away
+                              #{o.order_number ?? o.id} • PIN {o.pincode || '—'}
                             </div>
                           </div>
                           <div className="text-right shrink-0">

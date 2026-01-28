@@ -137,3 +137,11 @@ export async function buyCreditPlan(planId: number | string) {
     body: JSON.stringify({}),
   })
 }
+
+export async function updatePartnerHubLocation(input: { latitude: number; longitude: number }) {
+  return apiFetch<{ success: boolean; hub?: any; message?: string }>(`/partner/hub`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
