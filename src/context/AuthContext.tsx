@@ -1,5 +1,12 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import { loginAgent, loginPartner, signupAgent, signupPartner, type PartnerApplicationInput } from '../api/auth'
+import {
+  loginAgent,
+  loginPartner,
+  signupAgent,
+  signupPartner,
+  verifyPartnerEmail,
+  type PartnerApplicationInput,
+} from '../api/auth'
 
 export type Role = 'partner' | 'agent'
 
@@ -32,7 +39,8 @@ type AuthContextValue = {
     password: string,
     email?: string,
     application?: PartnerApplicationInput,
-  ) => Promise<string>
+  ) => Promise<{ message: string; partner_id?: string }>
+  verifyPartnerEmailCode: (partnerId: string, code: string) => Promise<string>
   logout: () => void
 }
 
@@ -140,7 +148,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signupPartnerWithPassword: async (name, phone, password, email, application) => {
         const resp = await signupPartner(name, phone, password, email, application)
         if (!resp.success) throw new Error('Signup failed')
-        return resp.message || 'Application submitted. Admin will review and contact you.'
+        return {
+          message:
+            resp.message || 'Verification code sent to your email. Please verify to submit your application.',
+          partner_id: resp.data?.partner_id,
+        }
+      },
+      verifyPartnerEmailCode: async (partnerId, code) => {
+        const resp = await verifyPartnerEmail(partnerId, code)
+        if (!resp.success) throw new Error(resp.message || 'Verification failed')
+        return resp.message || 'Email verified. Your application is now pending admin review.'
       },
       logout: () => {
         setUser(null)

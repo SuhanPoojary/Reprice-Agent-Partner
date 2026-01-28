@@ -7,6 +7,7 @@ export type PartnerVerificationStatus = 'approved' | 'pending' | 'rejected' | 'c
 export type PartnerApplicationInput = {
   companyName?: string
   businessAddress?: string
+  serviceablePincode?: string
   gstNumber?: string
   panNumber?: string
   messageFromPartner?: string
@@ -63,7 +64,13 @@ export type PartnerSignupResponse = {
   data?: {
     application_submitted?: boolean
     partner_id?: string
+    email_verification_required?: boolean
   }
+}
+
+export type PartnerVerifyEmailResponse = {
+  success: boolean
+  message?: string
 }
 
 export async function loginAgent(phone: string, password: string) {
@@ -112,10 +119,20 @@ export async function signupPartner(
       userType: 'partner',
       company_name: application?.companyName,
       business_address: application?.businessAddress,
+      pincode: application?.serviceablePincode,
       gst_number: application?.gstNumber,
       pan_number: application?.panNumber,
       message_from_partner: application?.messageFromPartner,
     }),
+  })
+}
+
+export async function verifyPartnerEmail(partner_id: string, code: string) {
+  return apiFetch<PartnerVerifyEmailResponse>('/auth/partner/verify-email', {
+    method: 'POST',
+    auth: false,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ partner_id, code }),
   })
 }
 

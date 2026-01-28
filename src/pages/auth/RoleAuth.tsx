@@ -16,6 +16,7 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
     loginPartnerWithPassword,
     signupAgentWithPassword,
     signupPartnerWithPassword,
+    verifyPartnerEmailCode,
   } = useAuth()
 
   const canSignup = role !== 'agent'
@@ -30,6 +31,7 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
   // Partner application fields
   const [companyName, setCompanyName] = useState('')
   const [businessAddress, setBusinessAddress] = useState('')
+  const [serviceablePincode, setServiceablePincode] = useState('')
   const [gstNumber, setGstNumber] = useState('')
   const [panNumber, setPanNumber] = useState('')
   const [applicationNote, setApplicationNote] = useState('')
@@ -38,6 +40,10 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+
+  const [emailVerifyPending, setEmailVerifyPending] = useState(false)
+  const [partnerIdForVerify, setPartnerIdForVerify] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
 
   const effectiveMode: Mode = canSignup ? mode : 'login'
 
@@ -56,6 +62,29 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
     setLoading(true)
 
     try {
+      if (role === 'partner' && effectiveMode === 'signup' && emailVerifyPending) {
+        if (!partnerIdForVerify.trim()) {
+          setError('Missing partner id. Please sign up again.')
+          return
+        }
+        if (!verificationCode.trim()) {
+          setError('Please enter the verification code sent to your email.')
+          return
+        }
+
+        const msg = await verifyPartnerEmailCode(partnerIdForVerify.trim(), verificationCode.trim())
+        setSuccess(msg)
+        setEmailVerifyPending(false)
+        setPartnerIdForVerify('')
+        setVerificationCode('')
+
+        // Take user back to login after verification.
+        setMode('login')
+        setStep(1)
+        setPassword('')
+        return
+      }
+
       const normalizedPhone = phone.trim()
 
       if (effectiveMode === 'login') {
@@ -90,25 +119,29 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
             setError('Please enter your business address.')
             return
           }
+          if (!serviceablePincode.trim()) {
+            setError('Please enter your serviceable pincode.')
+            return
+          }
         }
 
         const normalizedEmail = email.trim() || undefined
 
-        const msg = await signupPartnerWithPassword(name.trim(), normalizedPhone, password, normalizedEmail, {
+        const resp = await signupPartnerWithPassword(name.trim(), normalizedPhone, password, normalizedEmail, {
           companyName: companyName.trim() || undefined,
           businessAddress: businessAddress.trim() || undefined,
+          serviceablePincode: serviceablePincode.trim() || undefined,
           gstNumber: gstNumber.trim() || undefined,
           panNumber: panNumber.trim() || undefined,
           messageFromPartner: applicationNote.trim() || undefined,
         })
 
-        setSuccess(
-          msg ||
-            'Application submitted. Admin will review and contact you via email if approved. You can login after approval.',
-        )
-        setMode('login')
-        setStep(1)
-        setPassword('')
+        setSuccess(resp.message)
+        if (resp.partner_id) {
+          setPartnerIdForVerify(resp.partner_id)
+          setEmailVerifyPending(true)
+        }
+        // keep user on signup to enter the code
         return
       }
 
@@ -210,6 +243,36 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
             ) : null}
 
             <form onSubmit={onSubmit} className="space-y-4">
+              {effectiveMode === 'signup' && role === 'partner' && emailVerifyPending ? (
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                    We sent a verification code to <span className="font-semibold">{email.trim() || 'your email'}</span>.
+                    Enter it below to submit your application for admin review.
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-slate-700 font-medium text-sm">Verification Code *</div>
+                    <Input
+                      className="h-11"
+                      value={verificationCode}
+                      onChange={(e) => setVerificationCode(e.target.value)}
+                      placeholder="6-digit code"
+                      inputMode="numeric"
+                      required
+                    />
+                  </div>
+
+                  <Button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full h-12 text-base shadow-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-blue-500/30"
+                  >
+                    {loading ? 'Verifying…' : 'VERIFY CODE'}
+                  </Button>
+                </div>
+              ) : (
+                <>
+
               {effectiveMode === 'signup' ? (
                 <div className="space-y-2">
                   <div className="text-slate-700 font-medium text-sm">Full Name *</div>
@@ -226,7 +289,7 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
                 </div>
               ) : null}
 
-              {effectiveMode === 'signup' && role === 'partner' ? (
+              {effectiveMode === 'signup' && role === 'partner' && !emailVerifyPending ? (
                 <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                   <div className="text-sm text-slate-600">
                     Application step <span className="font-semibold text-slate-800">{step}</span> of{' '}
@@ -304,6 +367,18 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
                     />
                   </div>
 
+                  <div className="space-y-2">
+                    <div className="text-slate-700 font-medium text-sm">Serviceable Pincode *</div>
+                    <Input
+                      className="h-11"
+                      value={serviceablePincode}
+                      onChange={(e) => setServiceablePincode(e.target.value)}
+                      placeholder="e.g. 400001"
+                      inputMode="numeric"
+                      required
+                    />
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <div className="text-slate-700 font-medium text-sm">GST Number (Optional)</div>
@@ -377,6 +452,8 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
                       ? 'CONTINUE'
                       : 'SUBMIT APPLICATION'}
               </Button>
+                </>
+              )}
             </form>
           </div>
         </div>
