@@ -13,7 +13,6 @@ import {
   Users,
 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
-// import { Card, CardContent } from '../../components/ui/Card' // unused
 import { useAuth } from '../../context/AuthContext'
 import { useGeoLocation } from '../../hooks/useGeoLocation'
 import { distanceKm, formatKm } from '../../lib/geo'
