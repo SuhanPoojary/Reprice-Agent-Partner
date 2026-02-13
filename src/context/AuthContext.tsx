@@ -39,7 +39,7 @@ type AuthContextValue = {
     password: string,
     email?: string,
     application?: PartnerApplicationInput,
-  ) => Promise<{ message: string; partner_id?: string }>
+  ) => Promise<{ message: string; partner_id?: string; verification_code?: string }>
   verifyPartnerEmailCode: (partnerId: string, code: string) => Promise<string>
   logout: () => void
 }
@@ -152,6 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           message:
             resp.message || 'Verification code sent to your email. Please verify to submit your application.',
           partner_id: resp.data?.partner_id,
+          verification_code: resp.data?.verification_code,
         }
       },
       verifyPartnerEmailCode: async (partnerId, code) => {

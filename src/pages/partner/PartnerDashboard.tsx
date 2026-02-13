@@ -119,6 +119,12 @@ export default function PartnerDashboard() {
     error: hubError,
   } = usePartnerHubLocation()
 
+  const isFiniteNumber = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n)
+  const toHub = (lat: unknown, lng: unknown) => {
+    if (!isFiniteNumber(lat) || !isFiniteNumber(lng)) return null
+    return { lat, lng }
+  }
+
   const lastHubSyncRef = useRef<{ lat: number; lng: number } | null>(null)
   useEffect(() => {
     if (!hub) return
@@ -138,11 +144,17 @@ export default function PartnerDashboard() {
   }, [hub])
 
   const effectiveHub = useMemo(() => {
-    if (hub) return hub
+    if (hub && isFiniteNumber(hub.lat) && isFiniteNumber(hub.lng)) return hub
     const fromOrder = orders[0] ?? availableOrders[0]
-    if (fromOrder) return { lat: fromOrder.latitude, lng: fromOrder.longitude }
+    if (fromOrder) {
+      const maybe = toHub(fromOrder.latitude, fromOrder.longitude)
+      if (maybe) return maybe
+    }
     const fromAgent = agents.find((a) => a.latitude != null && a.longitude != null)
-    if (fromAgent) return { lat: fromAgent.latitude as number, lng: fromAgent.longitude as number }
+    if (fromAgent) {
+      const maybe = toHub(fromAgent.latitude, fromAgent.longitude)
+      if (maybe) return maybe
+    }
     return null
   }, [hub, orders, availableOrders, agents])
 
@@ -346,22 +358,26 @@ export default function PartnerDashboard() {
     return { pending, inProgress, completed }
   }, [orders])
 
-  const mapOrders = useMemo<MapOrder[]>(
-    () =>
-      filteredOrders.map((o) => ({
-        id: o.id,
-        customerName: o.customer_name,
-        phoneModel: o.phone_model,
-        // Map backend status to UI status model used by the map/widgets
-        status: o.status === 'completed' ? 'completed' : o.status === 'in-progress' ? 'on_the_way' : 'pending',
-        createdAt: o.created_at ?? new Date().toISOString(),
-        pickupLocation: { lat: o.latitude, lng: o.longitude },
-        pickupAddress: o.full_address,
-        assignedAgentId: o.agent_id ?? null,
-        agentDecision: 'pending',
-      })),
-    [filteredOrders],
-  )
+  const mapOrders = useMemo<MapOrder[]>(() => {
+    return filteredOrders
+      .map((o) => {
+        const pickup = toHub(o.latitude, o.longitude)
+        if (!pickup) return null
+        return {
+          id: o.id,
+          customerName: o.customer_name,
+          phoneModel: o.phone_model,
+          // Map backend status to UI status model used by the map/widgets
+          status: o.status === 'completed' ? 'completed' : o.status === 'in-progress' ? 'on_the_way' : 'pending',
+          createdAt: o.created_at ?? new Date().toISOString(),
+          pickupLocation: pickup,
+          pickupAddress: o.full_address,
+          assignedAgentId: o.agent_id ?? null,
+          agentDecision: 'pending',
+        } satisfies MapOrder
+      })
+      .filter(Boolean) as MapOrder[]
+  }, [filteredOrders])
 
   const statusLabel = (s: PartnerOrder['status']) => {
     if (s === 'in-progress') return 'In Progress'
@@ -384,7 +400,10 @@ export default function PartnerDashboard() {
         phone: a.phone ?? '',
         liveStatus: a.isOnline ? 'pending' : 'offline',
         lastSeenAt: a.last_seen_at ?? new Date(0).toISOString(),
-        location: { lat: a.latitude ?? effectiveHub.lat, lng: a.longitude ?? effectiveHub.lng },
+        location: {
+          lat: isFiniteNumber(a.latitude) ? a.latitude : effectiveHub.lat,
+          lng: isFiniteNumber(a.longitude) ? a.longitude : effectiveHub.lng,
+        },
       }))
     },
     [onlineAgents, effectiveHub],

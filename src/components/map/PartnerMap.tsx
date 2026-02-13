@@ -49,9 +49,24 @@ export const PartnerMap = forwardRef<PartnerMapHandle, {
   orders,
   agents,
 }, ref) {
+  const isFiniteNumber = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n)
+  const isValidLatLng = (p: any): p is { lat: number; lng: number } =>
+    p && isFiniteNumber(p.lat) && isFiniteNumber(p.lng)
+
+  if (!isValidLatLng(hub)) {
+    return (
+      <div className="rounded-2xl border bg-white shadow-soft">
+        <div className="px-4 py-6 text-sm text-slate-700">Map unavailable: missing hub location.</div>
+      </div>
+    )
+  }
+
   const center = useMemo(() => ({ lat: hub.lat, lng: hub.lng }), [hub.lat, hub.lng])
 
-  const onlineAgents = useMemo(() => agents.filter((a) => a.liveStatus !== 'offline'), [agents])
+  const onlineAgents = useMemo(
+    () => agents.filter((a) => a.liveStatus !== 'offline' && isValidLatLng(a.location)),
+    [agents],
+  )
 
   const mapRef = useRef<L.Map>(null as any)
 
@@ -63,6 +78,7 @@ export const PartnerMap = forwardRef<PartnerMapHandle, {
       .map((o) => {
         const agent = byId.get(String(o.assignedAgentId))
         if (!agent) return null
+        if (!isValidLatLng(agent.location) || !isValidLatLng(o.pickupLocation)) return null
         return {
           id: `route:${o.id}:${agent.id}`,
           from: agent.location,
@@ -74,8 +90,14 @@ export const PartnerMap = forwardRef<PartnerMapHandle, {
 
   const bounds = useMemo(() => {
     const pts: Array<[number, number]> = [[hub.lat, hub.lng]]
-    for (const o of orders) pts.push([o.pickupLocation.lat, o.pickupLocation.lng])
-    for (const a of onlineAgents) pts.push([a.location.lat, a.location.lng])
+    for (const o of orders) {
+      if (!isValidLatLng(o.pickupLocation)) continue
+      pts.push([o.pickupLocation.lat, o.pickupLocation.lng])
+    }
+    for (const a of onlineAgents) {
+      if (!isValidLatLng(a.location)) continue
+      pts.push([a.location.lat, a.location.lng])
+    }
     return L.latLngBounds(pts)
   }, [hub.lat, hub.lng, orders, onlineAgents])
 
@@ -127,7 +149,7 @@ export const PartnerMap = forwardRef<PartnerMapHandle, {
           </CircleMarker>
 
           {/* Orders */}
-          {orders.map((o) => (
+          {orders.filter((o) => isValidLatLng(o.pickupLocation)).map((o) => (
             <CircleMarker
               key={o.id}
               center={[o.pickupLocation.lat, o.pickupLocation.lng]}

@@ -65,6 +65,15 @@ export type PartnerSignupResponse = {
     application_submitted?: boolean
     partner_id?: string
     email_verification_required?: boolean
+
+    // Temporary fallback: backend may include code in response (opt-in via env flags)
+    verification_code?: string
+    delivery?: {
+      ok?: boolean
+      skipped?: boolean
+      reason?: string
+      error?: string
+    }
   }
 }
 

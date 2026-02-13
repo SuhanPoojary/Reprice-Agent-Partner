@@ -142,6 +142,15 @@ export default function RoleAuth({ role, variant = 'page' }: { role: Role; varia
         })
 
         setSuccess(resp.message)
+        if (resp.verification_code) {
+          alert(`Verification code (temporary backup): ${resp.verification_code}`)
+          setVerificationCode(resp.verification_code)
+          try {
+            localStorage.setItem('partner.verification_code', resp.verification_code)
+          } catch {
+            // ignore
+          }
+        }
         if (resp.partner_id) {
           setPartnerIdForVerify(resp.partner_id)
           setEmailVerifyPending(true)
